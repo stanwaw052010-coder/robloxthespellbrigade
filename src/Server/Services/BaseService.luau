@@ -44,16 +44,10 @@ local function buildArena()
 	local folder = Instance.new("Folder")
 	folder.Name = "Arena"
 
-	-- Floor.
-	local floor = Instance.new("Part")
-	floor.Name = "Floor"
-	floor.Anchored = true
-	floor.Size = Vector3.new(ARENA_RADIUS * 2.4, 2, ARENA_RADIUS * 2.4)
-	floor.Position = Vector3.new(0, -1, 0)
-	floor.Material = Enum.Material.Grass
-	floor.Color = Color3.fromRGB(63, 84, 54)
-	floor.TopSurface = Enum.SurfaceType.Smooth
-	floor.Parent = folder
+	-- NOTE: the ground floor and the player SpawnLocation are STATIC instances
+	-- declared in default.project.json so they exist from the very first frame
+	-- (before any script runs). That guarantees players never spawn into the
+	-- void while this arena is being built. Here we only add the gameplay props.
 
 	-- Central portal (the objective).
 	local portalPart = Instance.new("Part")
@@ -83,17 +77,6 @@ local function buildArena()
 	core.Material = Enum.Material.Slate
 	core.Color = Color3.fromRGB(90, 90, 110)
 	core.Parent = folder
-
-	-- Player spawn.
-	local spawn = Instance.new("SpawnLocation")
-	spawn.Name = "PlayerSpawn"
-	spawn.Anchored = true
-	spawn.Size = Vector3.new(12, 1, 12)
-	spawn.Position = Vector3.new(0, 0.5, 18)
-	spawn.Neutral = true
-	spawn.Color = Color3.fromRGB(80, 120, 200)
-	spawn.Material = Enum.Material.SmoothPlastic
-	spawn.Parent = folder
 
 	-- Enemy spawn pads evenly around the perimeter.
 	for i = 1, SPAWN_POINT_COUNT do
