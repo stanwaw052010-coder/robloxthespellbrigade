@@ -1,0 +1,7 @@
+# Toolchain pins for the project. Install with `rokit install`
+# (https://github.com/rojo-rbx/rokit). Aftman users can mirror these under
+# [tools] in aftman.toml.
+[tools]
+rojo = "rojo-rbx/rojo@7.5.1"
+stylua = "JohnnyMorganz/StyLua@2.0.2"
+luau-lsp = "JohnnyMorganz/luau-lsp@1.32.4"

@@ -1,0 +1,28 @@
+# Roblox / Rojo
+*.rbxl
+*.rbxlx
+*.rbxl.lock
+*.rbxlx.lock
+*.rbxm
+*.rbxmx
+
+# Rojo build output
+build/
+*.rbxl.bak
+
+# Tooling
+/.luaurc.local
+sourcemap.json
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+
+# Wally (Roblox package manager)
+/Packages
+/ServerPackages
+/DevPackages
+wally.lock
