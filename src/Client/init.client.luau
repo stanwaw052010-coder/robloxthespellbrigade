@@ -17,6 +17,7 @@ Remotes.event(Remotes.Names.WaveStateChanged)
 
 local CONTROLLERS = {
 	require(script.ClientState),
+	require(script.AmbianceController),
 	require(script.VFXController),
 	require(script.SpellInputController),
 	require(script.HUDController),

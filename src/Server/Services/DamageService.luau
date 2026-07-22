@@ -42,6 +42,7 @@ type Combatant = {
 	Statuses: { [string]: StatusState },
 	LastAttacker: Player?, -- for kill attribution
 	Dead: boolean,
+	DirectionalShield: boolean, -- blocks frontal hits (Shielded Brute)
 	Connections: { RBXScriptConnection },
 }
 
@@ -50,6 +51,7 @@ local DamageService = {}
 -- Signals other services subscribe to.
 DamageService.EnemyDied = Signal.new() -- (enemyDef, killerPlayer?, model)
 DamageService.DamageDealt = Signal.new() -- (sourcePlayer?, amount, targetModel)
+DamageService.Blocked = Signal.new() -- (targetModel, reason) — hit fully negated
 
 local combatants: { [Humanoid]: Combatant } = {}
 
@@ -80,8 +82,8 @@ local function recomputeWalkSpeed(c: Combatant)
 		return
 	end
 	local factor = 1
-	local freeze = c.Statuses[FX.Freeze]
-	if freeze then
+	-- Freeze and Stun both fully halt movement.
+	if c.Statuses[FX.Freeze] or c.Statuses[FX.Stun] then
 		factor = 0
 	end
 	local slow = c.Statuses[FX.Slow]
@@ -117,6 +119,7 @@ local function register(model: Model, humanoid: Humanoid, opts: {
 		Statuses = {},
 		LastAttacker = nil,
 		Dead = false,
+		DirectionalShield = opts.Def ~= nil and opts.Def.Gimmick == "DirectionalShield",
 		Connections = {},
 	}
 	combatants[humanoid] = c
@@ -248,6 +251,34 @@ function DamageService.applyDamage(target: any, amount: number, source: any?, op
 	end
 
 	-- Damage path ------------------------------------------------------------
+
+	-- Invulnerability (Shadow Wraith phase) blocks everything, including DoT.
+	if c and c.Statuses[FX.Invulnerable] then
+		DamageService.Blocked:Fire(c.Model, "invulnerable")
+		return 0
+	end
+
+	-- Directional shield (Shielded Brute): a hit that lands inside the enemy's
+	-- frontal cone is blocked. Damage-over-time bypasses the shield.
+	if c and c.DirectionalShield and not options.IsDoT then
+		local enemyRoot = c.Model.PrimaryPart or c.Model:FindFirstChild("HumanoidRootPart")
+		local attacker = resolvePlayer(source)
+		local attackerChar = attacker and attacker.Character
+		local attackerRoot = attackerChar and attackerChar:FindFirstChild("HumanoidRootPart")
+		if enemyRoot and attackerRoot then
+			local toAttacker = ((attackerRoot :: BasePart).Position - (enemyRoot :: BasePart).Position)
+			if toAttacker.Magnitude > 0.1 then
+				local facing = (enemyRoot :: BasePart).CFrame.LookVector
+				local cosAngle = facing:Dot(toAttacker.Unit)
+				local threshold = math.cos(math.rad(GameConfig.Combat.ShieldBlockHalfAngle))
+				if cosAngle >= threshold then
+					DamageService.Blocked:Fire(c.Model, "shield")
+					return 0
+				end
+			end
+		end
+	end
+
 	local finalAmount = amount
 
 	-- Outgoing "Weaken" debuff on the attacker reduces their damage.
@@ -340,12 +371,39 @@ function DamageService.applyEffect(target: any, effectType: string, power: numbe
 		Power = power,
 		Source = source,
 	}
-	if effectType == FX.Burn then
+	-- Damage-over-time effects tick once per second.
+	if effectType == FX.Burn or effectType == FX.Poison then
 		state.NextTick = now + 1
 	end
 	c.Statuses[effectType] = state
 
-	if effectType == FX.Freeze or effectType == FX.Slow then
+	if effectType == FX.Freeze or effectType == FX.Slow or effectType == FX.Stun then
+		recomputeWalkSpeed(c)
+	end
+end
+
+--[[ Removes an active effect immediately (e.g. ending an invulnerability
+     window early). ]]
+function DamageService.clearEffect(target: any, effectType: string)
+	local humanoid: Humanoid? = nil
+	if typeof(target) == "Instance" then
+		if target:IsA("Humanoid") then
+			humanoid = target
+		elseif target:IsA("Model") then
+			humanoid = target:FindFirstChildOfClass("Humanoid")
+		end
+	end
+	if not humanoid then
+		return
+	end
+	local c = combatants[humanoid]
+	if not c then
+		return
+	end
+	c.Statuses[effectType] = nil
+	if effectType == FX.Shield then
+		c.Shield = 0
+	elseif effectType == FX.Freeze or effectType == FX.Slow or effectType == FX.Stun then
 		recomputeWalkSpeed(c)
 	end
 end
@@ -388,8 +446,8 @@ local function tick()
 		end
 		local movementDirty = false
 		for effectType, state in c.Statuses do
-			-- Burn deals damage each second.
-			if effectType == FX.Burn and state.NextTick and now >= state.NextTick then
+			-- Damage-over-time (Burn, Poison) ticks each second.
+			if (effectType == FX.Burn or effectType == FX.Poison) and state.NextTick and now >= state.NextTick then
 				state.NextTick = now + 1
 				DamageService.applyDamage(humanoid, state.Power, state.Source, { IsDoT = true })
 			end
@@ -398,7 +456,7 @@ local function tick()
 				c.Statuses[effectType] = nil
 				if effectType == FX.Shield then
 					c.Shield = 0
-				elseif effectType == FX.Freeze or effectType == FX.Slow then
+				elseif effectType == FX.Freeze or effectType == FX.Slow or effectType == FX.Stun then
 					movementDirty = true
 				end
 			end

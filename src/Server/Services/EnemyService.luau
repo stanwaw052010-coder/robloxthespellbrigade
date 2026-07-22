@@ -21,10 +21,12 @@ local Players = game:GetService("Players")
 local Shared = game:GetService("ReplicatedStorage").Shared
 local GameConfig = require(Shared.GameConfig)
 local Signal = require(Shared.Signal)
+local Remotes = require(Shared.Remotes)
 local EnemyDefinitions = require(Shared.EnemyDefinitions)
 
 local DamageService = require(script.Parent.DamageService)
 local BaseService = require(script.Parent.BaseService)
+local BossController = require(script.Parent.BossController)
 
 type EnemyRuntime = {
 	Model: Model,
@@ -183,9 +185,39 @@ end
 
 -- Attacks ---------------------------------------------------------------------
 
+--[[ Applies an enemy's on-hit gimmick effect to a struck player (e.g. Frost
+     Wolf's slow). Called whenever a melee enemy lands a hit on a player. ]]
+local function applyContactGimmick(rt: EnemyRuntime, targetHumanoid: Humanoid)
+	if rt.Def.Gimmick == "FrostBite" then
+		local data = rt.Def.GimmickData or {}
+		DamageService.applyEffect(targetHumanoid, GameConfig.StatusEffects.Slow, data.SlowPower or 0.4, data.SlowDuration or 2, rt.Model)
+	end
+end
+
+--[[ Melee enemies bite any player who strays within reach while marching on the
+     base. Returns true if it attacked this tick. ]]
+local function attackNearbyPlayer(rt: EnemyRuntime): boolean
+	local now = os.clock()
+	if now - rt.LastAttack < rt.Def.AttackCooldown then
+		return false
+	end
+	local playerRoot, dist = nearestPlayerRoot(rt.Root.Position, 6)
+	if not playerRoot or dist > 6 then
+		return false
+	end
+	rt.LastAttack = now
+	local contactDamage = (rt.Model:GetAttribute("ContactDamage") :: number?) or rt.Def.ContactDamage
+	local targetHumanoid = playerRoot.Parent and playerRoot.Parent:FindFirstChildOfClass("Humanoid")
+	if targetHumanoid then
+		DamageService.applyDamage(targetHumanoid, contactDamage, rt.Model)
+		applyContactGimmick(rt, targetHumanoid)
+	end
+	return true
+end
+
 local function meleeContact(rt: EnemyRuntime)
 	-- Deal contact damage to the base and self-destruct (runners/fast), or keep
-	-- pounding it (tanks/bosses). Also hits any player standing on the core.
+	-- pounding it (tanks/bosses).
 	local now = os.clock()
 	if now - rt.LastAttack < rt.Def.AttackCooldown then
 		return
@@ -197,7 +229,7 @@ local function meleeContact(rt: EnemyRuntime)
 
 	local archetype = rt.Def.Archetype
 	if archetype == "Runner" or archetype == "Fast" then
-		-- Kamikaze: remove after one hit.
+		-- Kamikaze: remove after one hit (triggers death gimmicks like Explode).
 		EnemyService._removeEnemy(rt.Model, false)
 	end
 end
@@ -214,32 +246,11 @@ local function rangedAttack(rt: EnemyRuntime, targetRoot: BasePart)
 		DamageService.applyDamage(targetHumanoid, contactDamage, rt.Model)
 	end
 	-- Broadcast a projectile VFX so clients can render it.
-	local Remotes = require(Shared.Remotes)
 	Remotes.event(Remotes.Names.PlayVFX):FireAllClients({
 		Vfx = "EnemyProjectile",
 		Origin = rt.Root.Position,
 		Target = targetRoot.Position,
 	})
-end
-
--- Boss phase transitions (speed / damage ramp as health drops).
-local function updateBossPhase(rt: EnemyRuntime)
-	if not rt.Def.IsBoss then
-		return
-	end
-	local frac = rt.Humanoid.Health / rt.Humanoid.MaxHealth
-	local phases = rt.Def.BossPhases or 1
-	local phase = phases - math.floor(frac * phases)
-	phase = math.clamp(phase, 1, phases)
-	if phase > rt.Phase then
-		rt.Phase = phase
-		rt.Humanoid.WalkSpeed = rt.Def.WalkSpeed * (1 + 0.15 * (phase - 1))
-		local Remotes = require(Shared.Remotes)
-		Remotes.event(Remotes.Names.Notify):FireAllClients({
-			Text = ("%s: фаза %d!"):format(rt.Def.Name, phase),
-			Kind = "boss",
-		})
-	end
 end
 
 -- AI loops --------------------------------------------------------------------
@@ -252,8 +263,8 @@ local function runEnemyAI(rt: EnemyRuntime)
 		local root = rt.Root
 		local pos = root.Position
 
-		updateBossPhase(rt)
-
+		-- Frozen/stunned enemies can't act (boss phases are handled by
+		-- BossController, wired up at spawn time).
 		if DamageService.isFrozen(rt.Humanoid) then
 			task.wait(0.2)
 			continue
@@ -276,11 +287,11 @@ local function runEnemyAI(rt: EnemyRuntime)
 				moveToward(rt, portalPos)
 			end
 		else
-			-- Melee archetypes home on the portal.
+			-- Melee archetypes home on the portal, but bite players who get close.
 			local distToPortal = (pos - portalPos).Magnitude
 			if distToPortal <= (rt.Def.AttackRange > 0 and rt.Def.AttackRange or 7) then
 				meleeContact(rt)
-			else
+			elseif not attackNearbyPlayer(rt) then
 				-- Occasionally repath to route around walls / when stuck.
 				local now = os.clock()
 				if now >= repathAt then
@@ -326,17 +337,131 @@ local function runMinionAI(rt: EnemyRuntime)
 	end
 end
 
+-- Gimmicks --------------------------------------------------------------------
+
+--[[ Ядовитая лужа: DoT-зона на полу после смерти слизня. ]]
+local function spawnPoisonPuddle(position: Vector3, data: { [string]: any })
+	local radius = data.PuddleRadius or 8
+	local dps = data.PuddleDamage or 6
+	local duration = data.PuddleDuration or 6
+
+	local puddle = Instance.new("Part")
+	puddle.Name = "PoisonPuddle"
+	puddle.Anchored = true
+	puddle.CanCollide = false
+	puddle.CanQuery = false
+	puddle.Shape = Enum.PartType.Cylinder
+	puddle.Size = Vector3.new(0.4, radius * 2, radius * 2)
+	puddle.CFrame = CFrame.new(position + Vector3.new(0, 0.25, 0)) * CFrame.Angles(0, 0, math.rad(90))
+	puddle.Material = Enum.Material.Neon
+	puddle.Color = Color3.fromRGB(120, 200, 70)
+	puddle.Transparency = 0.5
+	puddle.Parent = enemiesFolder
+
+	local expireAt = os.clock() + duration
+	task.spawn(function()
+		while os.clock() < expireAt and puddle.Parent do
+			for _, player in Players:GetPlayers() do
+				local char = player.Character
+				local proot = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+				local hum = char and char:FindFirstChildOfClass("Humanoid")
+				if proot and hum and hum.Health > 0 and (proot.Position - position).Magnitude <= radius then
+					DamageService.applyEffect(hum, GameConfig.StatusEffects.Poison, dps, 1.2, puddle)
+				end
+			end
+			task.wait(1)
+		end
+		if puddle.Parent then
+			puddle:Destroy()
+		end
+	end)
+end
+
+--[[ Взрыв бомб-гоблина: урон по площади игрокам и базе. ]]
+local function spawnExplosion(position: Vector3, data: { [string]: any })
+	local radius = data.ExplosionRadius or 12
+	local damage = data.ExplosionDamage or 35
+
+	Remotes.event(Remotes.Names.PlayVFX):FireAllClients({
+		Vfx = "Fireball", Target = position, Radius = radius,
+	})
+
+	for _, player in Players:GetPlayers() do
+		local char = player.Character
+		local proot = char and char:FindFirstChild("HumanoidRootPart") :: BasePart?
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		if proot and hum and hum.Health > 0 and (proot.Position - position).Magnitude <= radius then
+			DamageService.applyDamage(hum, damage, nil)
+		end
+	end
+	-- Damage the base too if the goblin blew up next to it.
+	if (position - BaseService.getPortalPosition()).Magnitude <= radius then
+		BaseService.damageBase(damage)
+	end
+end
+
+--[[ Runs a Shadow Wraith's phase in/out of invulnerability, blinking forward on
+     each vanish. During the invulnerable window DamageService blocks all hits. ]]
+local function runWraithPhasing(rt: EnemyRuntime)
+	local cfg = GameConfig.Combat
+	local head = rt.Model:FindFirstChild("Head") :: BasePart?
+	local function setGhost(on: boolean)
+		rt.Root.Transparency = on and 0.75 or 0
+		if head then
+			head.Transparency = on and 0.75 or 0
+		end
+	end
+
+	while rt.Alive and rt.Humanoid.Health > 0 do
+		-- Vulnerable window.
+		DamageService.clearEffect(rt.Humanoid, GameConfig.StatusEffects.Invulnerable)
+		setGhost(false)
+		task.wait(cfg.WraithVulnerableWindow)
+		if not rt.Alive or rt.Humanoid.Health <= 0 then
+			break
+		end
+
+		-- Invulnerable window: blink toward the portal and go untouchable.
+		DamageService.applyEffect(rt.Humanoid, GameConfig.StatusEffects.Invulnerable, 1, cfg.WraithInvulnerableWindow, rt.Model)
+		setGhost(true)
+		local toPortal = (BaseService.getPortalPosition() - rt.Root.Position)
+		if toPortal.Magnitude > 1 then
+			local blink = math.min((rt.Def.GimmickData or {}).BlinkStuds or 18, toPortal.Magnitude - 4)
+			rt.Root.CFrame = rt.Root.CFrame + toPortal.Unit * blink
+		end
+		task.wait(cfg.WraithInvulnerableWindow)
+	end
+	setGhost(false)
+end
+
+--[[ Fires the enemy's death gimmick (poison puddle / explosion). ]]
+local function handleDeathGimmick(rt: EnemyRuntime)
+	local gimmick = rt.Def.Gimmick
+	if not gimmick then
+		return
+	end
+	local pos = rt.Root.Position
+	local data = rt.Def.GimmickData or {}
+	if gimmick == "PoisonDeath" then
+		spawnPoisonPuddle(pos, data)
+	elseif gimmick == "Explode" then
+		spawnExplosion(pos, data)
+	end
+end
+
 -- Spawning & removal ----------------------------------------------------------
 
---[[ Spawns a regular wave enemy. Returns the model. ]]
-function EnemyService.spawnEnemy(enemyId: string, healthMultiplier: number, damageMultiplier: number): Model?
+--[[ Spawns a regular wave enemy. `positionOverride` lets bosses summon adds at
+     a specific spot; otherwise a random perimeter pad is used. Returns the
+     model. ]]
+function EnemyService.spawnEnemy(enemyId: string, healthMultiplier: number, damageMultiplier: number, positionOverride: Vector3?): Model?
 	local def = EnemyDefinitions.get(enemyId)
 	if not def then
 		warn("[EnemyService] unknown enemy id: " .. tostring(enemyId))
 		return nil
 	end
 
-	local spawnPos = BaseService.randomSpawnPoint()
+	local spawnPos = positionOverride or BaseService.randomSpawnPoint()
 	local model, humanoid, root = buildRig(def, spawnPos)
 	model.Parent = enemiesFolder
 
@@ -368,6 +493,16 @@ function EnemyService.spawnEnemy(enemyId: string, healthMultiplier: number, dama
 	end)
 
 	task.spawn(runEnemyAI, rt)
+
+	-- Bosses get their phase / ability loop.
+	if def.IsBoss then
+		BossController.attach(rt)
+	end
+	-- Shadow Wraith phases in and out of invulnerability.
+	if def.Gimmick == "Phase" then
+		task.spawn(runWraithPhasing, rt)
+	end
+
 	return model
 end
 
@@ -427,6 +562,8 @@ function EnemyService._removeEnemy(model: Model, killedByPlayer: boolean)
 	local wasMinion = rt.IsMinion
 	if not wasMinion then
 		aliveWaveEnemies = math.max(0, aliveWaveEnemies - 1)
+		-- Death gimmicks (poison puddle, explosion) fire for real enemies only.
+		handleDeathGimmick(rt)
 	end
 
 	-- Release the DamageService combatant entry (covers self-destruct / despawn
@@ -499,7 +636,16 @@ function EnemyService.Init()
 end
 
 function EnemyService.Start()
-	-- nothing; spawning is driven by WaveManager / SpellCastingService
+	-- Turn fully-negated hits (shield block / invulnerability) into a small
+	-- client-side "block" flash so players get feedback.
+	DamageService.Blocked:Connect(function(model, _reason)
+		local part = model and (model.PrimaryPart or model:FindFirstChild("HumanoidRootPart")) :: BasePart?
+		if part then
+			Remotes.event(Remotes.Names.PlayVFX):FireAllClients({
+				Vfx = "Block", Target = part.Position,
+			})
+		end
+	end)
 end
 
 return EnemyService

@@ -28,6 +28,7 @@ local ORDER = {
 	"BaseService",
 	"DamageService",
 	"EconomyService",
+	"BossController",
 	"EnemyService",
 	"AntiExploit",
 	"UpgradeService",

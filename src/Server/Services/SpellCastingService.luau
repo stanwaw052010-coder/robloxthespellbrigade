@@ -28,6 +28,7 @@ local EnemyService = require(script.Parent.EnemyService)
 local PlayerDataService = require(script.Parent.PlayerDataService)
 local UpgradeService = require(script.Parent.UpgradeService)
 local AntiExploit = require(script.Parent.AntiExploit)
+local BossController = require(script.Parent.BossController)
 
 local SpellCastingService = {}
 
@@ -298,6 +299,12 @@ local function onCastRequest(player: Player, payload: any)
 	-- 4. Caster must be alive with a character.
 	local root = getCharacterRoot(player)
 	if not root then
+		return
+	end
+
+	-- 4b. The Lich's no-cast zones seal magic: reject casts made from inside one.
+	if BossController.isInNoCastZone(root.Position) then
+		Remotes.event(Remotes.Names.Notify):FireClient(player, { Text = "Магия запечатана в этой зоне!", Kind = "warn" })
 		return
 	end
 

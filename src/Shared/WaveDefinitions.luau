@@ -28,18 +28,21 @@ local WaveDefinitions = {}
 local Authored: { [number]: { Composition: { [string]: number }, SpawnDelay: number, Boss: string? } } = {
 	[1] = { Composition = { Goblin = 10 }, SpawnDelay = 1.5 },
 	[2] = { Composition = { Goblin = 12, Skeleton = 4 }, SpawnDelay = 1.3 },
-	[3] = { Composition = { Goblin = 10, Skeleton = 8, Imp = 4 }, SpawnDelay = 1.2 },
-	[4] = { Composition = { Skeleton = 12, Imp = 8, DarkArcher = 2 }, SpawnDelay = 1.1 },
-	[5] = { Composition = { Goblin = 14, Skeleton = 6 }, SpawnDelay = 1.0, Boss = "OrcChieftain" },
-	[6] = { Composition = { Imp = 14, Skeleton = 8, DarkArcher = 3 }, SpawnDelay = 1.0 },
-	[7] = { Composition = { Skeleton = 14, Ogre = 2, DarkArcher = 4 }, SpawnDelay = 0.95 },
-	[8] = { Composition = { Imp = 18, Ogre = 2, DarkArcher = 5 }, SpawnDelay = 0.9 },
-	[9] = { Composition = { Skeleton = 16, Ogre = 3, Imp = 10, DarkArcher = 5 }, SpawnDelay = 0.85 },
-	[10] = { Composition = { Skeleton = 12, Ogre = 3, Imp = 12 }, SpawnDelay = 0.85, Boss = "LichKing" },
+	[3] = { Composition = { Goblin = 8, Skeleton = 8, PoisonSlime = 4 }, SpawnDelay = 1.2 },
+	[4] = { Composition = { Skeleton = 10, Imp = 6, BombGoblin = 4, SkeletonArcher = 2 }, SpawnDelay = 1.1 },
+	[5] = { Composition = { Goblin = 12, FrostWolf = 4, PoisonSlime = 4 }, SpawnDelay = 1.0, Boss = "FireGolem" },
+	[6] = { Composition = { Imp = 12, ShadowWraith = 3, SkeletonArcher = 3 }, SpawnDelay = 1.0 },
+	[7] = { Composition = { Skeleton = 12, ShieldedBrute = 2, DarkArcher = 4, FrostWolf = 3 }, SpawnDelay = 0.95 },
+	[8] = { Composition = { BombGoblin = 8, Ogre = 2, ShadowWraith = 3, SkeletonArcher = 4 }, SpawnDelay = 0.9 },
+	[9] = { Composition = { PoisonSlime = 8, ShieldedBrute = 3, FrostWolf = 6, DarkArcher = 5 }, SpawnDelay = 0.85 },
+	[10] = { Composition = { Skeleton = 10, ShadowWraith = 4, ShieldedBrute = 2, BombGoblin = 6 }, SpawnDelay = 0.85, Boss = "Lich" },
 }
 
 -- Pool used to seed the composition of procedurally generated waves.
-local ENDLESS_POOL = { "Goblin", "Skeleton", "Imp", "Ogre", "DarkArcher" }
+local ENDLESS_POOL = {
+	"Goblin", "Skeleton", "Imp", "Ogre", "DarkArcher",
+	"PoisonSlime", "BombGoblin", "FrostWolf", "ShadowWraith", "ShieldedBrute", "SkeletonArcher",
+}
 
 local function totalCount(comp: { [string]: number }): number
 	local n = 0
@@ -82,11 +85,11 @@ function WaveDefinitions.build(n: number): WaveSpec
 		end
 		spawnDelay = math.max(0.45, 1.5 - n * 0.03)
 
-		-- Bosses on the configured cadence.
+		-- Bosses on the configured cadence. Alternate the two phased bosses.
 		if n % cfg.BossEvery == 0 then
-			boss = (n % 20 == 0) and "LichKing" or "OrcChieftain"
+			boss = (n % 20 == 0) and "Lich" or "FireGolem"
 		elseif n % cfg.MiniBossEvery == 0 then
-			boss = "Ogre" -- a beefier "mini-boss" stand-in
+			boss = "ShieldedBrute" -- a tougher "mini-boss" stand-in
 		end
 	end
 

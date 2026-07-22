@@ -35,6 +35,11 @@ export type EnemyDef = {
 	BodySize: Vector3,
 	IsBoss: boolean?,
 	BossPhases: number?,
+	BossId: string?, -- selects the BossController behaviour set
+	-- Unique gimmick that makes the enemy more than a bag of HP. One of:
+	-- "PoisonDeath" | "Explode" | "FrostBite" | "Phase" | "DirectionalShield".
+	Gimmick: string?,
+	GimmickData: { [string]: any }?,
 }
 
 local EnemyDefinitions = {}
@@ -115,6 +120,141 @@ local Enemies: { [string]: EnemyDef } = {
 		BodySize = Vector3.new(2, 3, 1),
 	},
 
+	SkeletonArcher = {
+		Id = "SkeletonArcher",
+		Name = "Skeleton Archer",
+		Archetype = "Ranged",
+		MaxHealth = 40,
+		WalkSpeed = 12,
+		ContactDamage = 12,
+		AttackCooldown = 2.2,
+		AttackRange = 38,
+		GoldReward = 8,
+		XpReward = 16,
+		BodyColor = Color3.fromRGB(210, 205, 180),
+		BodySize = Vector3.new(2, 3, 1),
+	},
+
+	-- Ядовитый слизень: при смерти оставляет лужу яда (DoT-зона на полу).
+	PoisonSlime = {
+		Id = "PoisonSlime",
+		Name = "Poison Slime",
+		Archetype = "Runner",
+		MaxHealth = 50,
+		WalkSpeed = 10,
+		ContactDamage = 8,
+		AttackCooldown = 1,
+		AttackRange = 0,
+		GoldReward = 8,
+		XpReward = 16,
+		BodyColor = Color3.fromRGB(110, 190, 70),
+		BodySize = Vector3.new(2.4, 2, 2.4),
+		Gimmick = "PoisonDeath",
+		GimmickData = { PuddleRadius = 8, PuddleDamage = 6, PuddleDuration = 6 },
+	},
+
+	-- Взрывной гоблин: при смерти или контакте с базой взрывается (AoE).
+	BombGoblin = {
+		Id = "BombGoblin",
+		Name = "Bomb Goblin",
+		Archetype = "Fast",
+		MaxHealth = 30,
+		WalkSpeed = 20,
+		ContactDamage = 10,
+		AttackCooldown = 1,
+		AttackRange = 0,
+		GoldReward = 9,
+		XpReward = 18,
+		BodyColor = Color3.fromRGB(200, 120, 40),
+		BodySize = Vector3.new(1.8, 2.4, 1.2),
+		Gimmick = "Explode",
+		GimmickData = { ExplosionRadius = 12, ExplosionDamage = 35 },
+	},
+
+	-- Морозный волк: при попадании по игроку накладывает замедление.
+	FrostWolf = {
+		Id = "FrostWolf",
+		Name = "Frost Wolf",
+		Archetype = "Fast",
+		MaxHealth = 45,
+		WalkSpeed = 21,
+		ContactDamage = 12,
+		AttackCooldown = 1.2,
+		AttackRange = 0,
+		GoldReward = 10,
+		XpReward = 20,
+		BodyColor = Color3.fromRGB(150, 200, 235),
+		BodySize = Vector3.new(2.6, 2, 1.2),
+		Gimmick = "FrostBite",
+		GimmickData = { SlowPower = 0.45, SlowDuration = 2.5 },
+	},
+
+	-- Тень: периодически становится неуязвимой и телепортируется.
+	ShadowWraith = {
+		Id = "ShadowWraith",
+		Name = "Shadow Wraith",
+		Archetype = "Runner",
+		MaxHealth = 70,
+		WalkSpeed = 15,
+		ContactDamage = 16,
+		AttackCooldown = 1.2,
+		AttackRange = 0,
+		GoldReward = 14,
+		XpReward = 28,
+		BodyColor = Color3.fromRGB(80, 60, 110),
+		BodySize = Vector3.new(2, 3.4, 1),
+		Gimmick = "Phase",
+		GimmickData = { BlinkStuds = 18 },
+	},
+
+	-- Щитоносец: держит щит спереди; бить нужно со спины.
+	ShieldedBrute = {
+		Id = "ShieldedBrute",
+		Name = "Shielded Brute",
+		Archetype = "Tank",
+		MaxHealth = 180,
+		WalkSpeed = 10,
+		ContactDamage = 22,
+		AttackCooldown = 1.6,
+		AttackRange = 0,
+		GoldReward = 16,
+		XpReward = 34,
+		BodyColor = Color3.fromRGB(130, 120, 140),
+		BodySize = Vector3.new(3, 4.5, 1.8),
+		Gimmick = "DirectionalShield",
+	},
+
+	-- Boss adds -----------------------------------------------------------
+	FireElemental = {
+		Id = "FireElemental",
+		Name = "Fire Elemental",
+		Archetype = "Fast",
+		MaxHealth = 40,
+		WalkSpeed = 19,
+		ContactDamage = 12,
+		AttackCooldown = 1,
+		AttackRange = 0,
+		GoldReward = 4,
+		XpReward = 8,
+		BodyColor = Color3.fromRGB(255, 120, 50),
+		BodySize = Vector3.new(1.6, 2.4, 1.6),
+	},
+
+	ShadowCopy = {
+		Id = "ShadowCopy",
+		Name = "Shadow Copy",
+		Archetype = "Runner",
+		MaxHealth = 45,
+		WalkSpeed = 15,
+		ContactDamage = 12,
+		AttackCooldown = 1.1,
+		AttackRange = 0,
+		GoldReward = 3,
+		XpReward = 6,
+		BodyColor = Color3.fromRGB(60, 55, 80),
+		BodySize = Vector3.new(1.9, 3, 0.9),
+	},
+
 	-- Player-summoned ally (Necromancy). Same data shape, Archetype = Minion.
 	SkeletonMinion = {
 		Id = "SkeletonMinion",
@@ -147,6 +287,27 @@ local Enemies: { [string]: EnemyDef } = {
 		BodySize = Vector3.new(5, 7, 3),
 		IsBoss = true,
 		BossPhases = 2,
+		BossId = "Generic",
+	},
+
+	-- Огненный Голем (Wave 5 boss): 3 фазы — огненные волны, призыв
+	-- элементалей, берсерк с огненной аурой.
+	FireGolem = {
+		Id = "FireGolem",
+		Name = "Fire Golem",
+		Archetype = "Boss",
+		MaxHealth = 1800,
+		WalkSpeed = 10,
+		ContactDamage = 42,
+		AttackCooldown = 1.5,
+		AttackRange = 6,
+		GoldReward = 150,
+		XpReward = 300,
+		BodyColor = Color3.fromRGB(200, 80, 40),
+		BodySize = Vector3.new(5, 7.5, 3),
+		IsBoss = true,
+		BossPhases = 3,
+		BossId = "FireGolem",
 	},
 
 	LichKing = {
@@ -164,6 +325,27 @@ local Enemies: { [string]: EnemyDef } = {
 		BodySize = Vector3.new(5, 8, 3),
 		IsBoss = true,
 		BossPhases = 3,
+		BossId = "Generic",
+	},
+
+	-- Лич-некромант (финальный босс): 3 фазы — призыв скелетов и тьма,
+	-- зоны запрета каста, воскрешение врагов как теневых копий.
+	Lich = {
+		Id = "Lich",
+		Name = "Lich",
+		Archetype = "Boss",
+		MaxHealth = 3600,
+		WalkSpeed = 9,
+		ContactDamage = 50,
+		AttackCooldown = 2,
+		AttackRange = 42,
+		GoldReward = 350,
+		XpReward = 700,
+		BodyColor = Color3.fromRGB(110, 80, 160),
+		BodySize = Vector3.new(5, 8.5, 3),
+		IsBoss = true,
+		BossPhases = 3,
+		BossId = "Lich",
 	},
 }
 

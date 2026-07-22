@@ -42,6 +42,16 @@ local COLORS = {
 	Danger = Color3.fromRGB(230, 80, 80),
 }
 
+-- Element accent colours for skill-icon frames (6.1: рамка по цвету стихии).
+local ELEMENT_COLORS: { [string]: Color3 } = {
+	Fire = Color3.fromRGB(255, 90, 40),
+	Ice = Color3.fromRGB(120, 200, 255),
+	Earth = Color3.fromRGB(180, 140, 90),
+	Lightning = Color3.fromRGB(255, 235, 110),
+	Holy = Color3.fromRGB(255, 225, 150),
+	Shadow = Color3.fromRGB(170, 110, 230),
+}
+
 -- UI factory helpers ----------------------------------------------------------
 
 local function corner(parent: Instance, radius: number)
@@ -111,7 +121,7 @@ local gui: ScreenGui
 local hpFill: Frame, manaFill: Frame, hpText: TextLabel, manaText: TextLabel
 local goldText: TextLabel, essenceText: TextLabel, levelText: TextLabel
 local waveText: TextLabel, enemyText: TextLabel, baseFill: Frame, baseText: TextLabel, countdownText: TextLabel
-local skillSlots: { [string]: { Button: TextButton, Overlay: Frame, CdText: TextLabel, NameText: TextLabel } } = {}
+local skillSlots: { [string]: { Button: TextButton, Overlay: Frame, CdText: TextLabel, NameText: TextLabel, Stroke: UIStroke } } = {}
 local notifyHolder: Frame
 local shopPanel: Frame
 local bookPanel: Frame
@@ -292,6 +302,13 @@ local function buildSkillBar(parent: Instance)
 			Radius = 12,
 		})
 
+		-- Element-coloured frame around the icon (recoloured when book changes).
+		local stroke = Instance.new("UIStroke")
+		stroke.Thickness = 2.5
+		stroke.Color = COLORS.Accent
+		stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		stroke.Parent = button
+
 		makeText({
 			Parent = button,
 			Text = SLOT_KEYS[slot] or slot,
@@ -320,7 +337,16 @@ local function buildSkillBar(parent: Instance)
 			Size = UDim2.fromScale(1, 1),
 		})
 
-		skillSlots[slot] = { Button = button, Overlay = overlay, CdText = cdText, NameText = nameText }
+		skillSlots[slot] = { Button = button, Overlay = overlay, CdText = cdText, NameText = nameText, Stroke = stroke }
+	end
+end
+
+--[[ Recolours the skill-icon frames to the equipped book's element. ]]
+local function updateSkillFrames()
+	local book = SpellbookModule.getBook(ClientState.SelectedBook)
+	local color = book and ELEMENT_COLORS[book.Element] or COLORS.Accent
+	for _, refs in skillSlots do
+		refs.Stroke.Color = color
 	end
 end
 
@@ -614,6 +640,8 @@ end
 
 -- Update loops ----------------------------------------------------------------
 
+local lastHealth = -1
+
 local function updateVitals()
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
@@ -621,6 +649,13 @@ local function updateVitals()
 		local frac = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
 		hpFill.Size = UDim2.fromScale(frac, 1)
 		hpText.Text = ("%d / %d"):format(math.ceil(humanoid.Health), humanoid.MaxHealth)
+
+		-- Damage flash: briefly whiten the HP bar when health drops (6.1).
+		if lastHealth >= 0 and humanoid.Health < lastHealth - 0.5 then
+			hpFill.BackgroundColor3 = Color3.fromRGB(255, 235, 235)
+			TweenService:Create(hpFill, TweenInfo.new(0.35), { BackgroundColor3 = COLORS.Health }):Play()
+		end
+		lastHealth = humanoid.Health
 	end
 	local manaFrac = math.clamp(ClientState.Mana / ClientState.MaxMana, 0, 1)
 	manaFill.Size = UDim2.fromScale(manaFrac, 1)
@@ -686,6 +721,7 @@ local function wireRemotes()
 	Remotes.event(Remotes.Names.PlayerStatsChanged).OnClientEvent:Connect(function(payload)
 		ClientState.merge(payload)
 		updateCurrency()
+		updateSkillFrames()
 	end)
 
 	Remotes.event(Remotes.Names.Notify).OnClientEvent:Connect(function(data)
@@ -734,6 +770,7 @@ end
 function HUDController.Start()
 	wireRemotes()
 	updateCurrency()
+	updateSkillFrames()
 	RunService.RenderStepped:Connect(function()
 		updateVitals()
 		updateCooldowns()

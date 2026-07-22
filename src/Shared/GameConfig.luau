@@ -66,11 +66,25 @@ GameConfig.Security = {
 
 -- Status effect identifiers (shared so client VFX and server logic agree) ------
 GameConfig.StatusEffects = {
-	Burn = "Burn", -- damage over time
+	Burn = "Burn", -- fire damage over time
+	Poison = "Poison", -- nature/slime damage over time (from puddles)
 	Freeze = "Freeze", -- hard crowd control (cannot move)
 	Slow = "Slow", -- movement speed reduction
+	Stun = "Stun", -- brief hard stop from an attack
 	Weaken = "Weaken", -- deals-less-damage debuff
 	Shield = "Shield", -- absorbs incoming damage
+	Invulnerable = "Invulnerable", -- ignores all incoming damage (Shadow Wraith)
+}
+
+-- Boss / special-attack telegraphing --------------------------------------------
+GameConfig.Combat = {
+	-- How long a red danger zone shows on the floor before the attack lands.
+	TelegraphSeconds = 1.3,
+	-- Frontal cone (degrees, half-angle) a directional shield blocks from.
+	ShieldBlockHalfAngle = 70,
+	-- Shadow Wraith invulnerability cadence.
+	WraithVulnerableWindow = 2.5,
+	WraithInvulnerableWindow = 3.5,
 }
 
 table.freeze(GameConfig.Player)
@@ -79,6 +93,7 @@ table.freeze(GameConfig.Wave)
 table.freeze(GameConfig.Economy)
 table.freeze(GameConfig.Security)
 table.freeze(GameConfig.StatusEffects)
+table.freeze(GameConfig.Combat)
 table.freeze(GameConfig)
 
 return GameConfig
