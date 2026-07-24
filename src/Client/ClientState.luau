@@ -13,7 +13,9 @@
 local Shared = game:GetService("ReplicatedStorage").Shared
 local SpellbookModule = require(Shared.SpellbookModule)
 local GameConfig = require(Shared.GameConfig)
+local Remotes = require(Shared.Remotes)
 local Signal = require(Shared.Signal)
+local UpgradeCatalogue = require(Shared.UpgradeCatalogue)
 
 local ClientState = {}
 
@@ -26,12 +28,25 @@ ClientState.UnlockedBooks = { Fire = true } :: { [string]: boolean }
 ClientState.Mana = GameConfig.Player.MaxMana
 ClientState.MaxMana = GameConfig.Player.MaxMana
 
+-- Cosmetics, mirrored from the profile. Keyed by kind ("Aura" | "Hat");
+-- UnlockedCosmetics uses the flat "<kind>:<id>" key the server stores.
+ClientState.Cosmetics = { Aura = "Ember", Hat = "Hood" } :: { [string]: string }
+ClientState.UnlockedCosmetics = {} :: { [string]: boolean }
+
+-- Purchased upgrade levels, mirrored from the server (levels only — the server
+-- owns what each level is worth). Used by the shop UI and to keep the HUD's
+-- cooldown prediction in step with the cooldowns the server actually applies.
+ClientState.GlobalLevels = {} :: { [string]: number }
+ClientState.SpellLevels = {} :: { [string]: { [string]: number } }
+
 ClientState.Changed = Signal.new() -- fires () after any merge
+ClientState.UpgradesChanged = Signal.new() -- fires () when upgrade levels arrive
 
 --[[ Merges a partial stats payload from the server. ]]
 function ClientState.merge(payload: { [string]: any })
+	local target = ClientState :: any
 	for key, value in payload do
-		;(ClientState :: any)[key] = value
+		target[key] = value
 	end
 	ClientState.Changed:Fire()
 end
@@ -50,6 +65,51 @@ function ClientState.getSpellForSlot(slot: string): any?
 		end
 	end
 	return nil
+end
+
+--[[ Purchased level of a per-spell tree node (0 if none). ]]
+function ClientState.getSpellNodeLevel(spellId: string, nodeId: string): number
+	local levels = ClientState.SpellLevels[spellId]
+	return (levels and levels[nodeId]) or 0
+end
+
+--[[ Mirrors the server's cooldown maths so the HUD's radial timer and the
+     client-side cast gate use the same duration the server enforces. ]]
+function ClientState.getEffectiveCooldown(spell: any): number
+	local mult = 1
+
+	local globalEntry = UpgradeCatalogue.Entries.Cooldown
+	local globalLevel = ClientState.GlobalLevels[globalEntry.Id] or 0
+	mult += globalEntry.PerLevel * globalLevel
+
+	local perSpell = 1
+	local levels = ClientState.SpellLevels[spell.Id]
+	if levels then
+		local isUltimate = spell.Slot == "Ultimate"
+		for nodeId, level in levels do
+			local node = UpgradeCatalogue.nodeFor(spell.Id, nodeId, isUltimate)
+			if node and node.Kind == "Haste" then
+				perSpell += node.PerLevel * level
+			end
+		end
+	end
+
+	return spell.Cooldown * mult * math.max(0.25, perSpell)
+end
+
+function ClientState.Init()
+	Remotes.event(Remotes.Names.SpellTreeChanged).OnClientEvent:Connect(function(payload)
+		if type(payload) ~= "table" then
+			return
+		end
+		if type(payload.SpellLevels) == "table" then
+			ClientState.SpellLevels = payload.SpellLevels
+		end
+		if type(payload.GlobalLevels) == "table" then
+			ClientState.GlobalLevels = payload.GlobalLevels
+		end
+		ClientState.UpgradesChanged:Fire()
+	end)
 end
 
 return ClientState

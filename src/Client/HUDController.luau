@@ -2,13 +2,16 @@
 --[[
 	HUDController
 	-------------
-	HUD и весь игровой UI: HP/мана, панель скиллов с кулдаунами, счётчик волны,
-	здоровье базы, уведомления, магазин апгрейдов, выбор книги, экран итогов.
+	HUD и игровой UI: HP/мана, панель скиллов, счётчик волны, магазин, итоги.
 
-	Builds the entire interface programmatically (no imported UI assets) so it
-	runs the moment you sync. Reads local Humanoid health, ClientState (mana /
-	currency / equipped book) and the wave/base/notify remotes. The shop appears
-	during intermissions; the book selector when idle; results at match end.
+	Owns the always-on interface: vitals, the skill bar with radial cooldowns,
+	wave/base status, and the two modals it drives — the between-waves upgrade
+	shop and the end-of-match results screen. The lobby (books, cosmetics,
+	party), the party frames and the minimap live in their own controllers and
+	are mounted into this ScreenGui.
+
+	Everything is built programmatically from UIKit, so the game runs the moment
+	you sync it with no imported UI assets.
 ]]
 
 local Players = game:GetService("Players")
@@ -21,119 +24,42 @@ local SpellbookModule = require(Shared.SpellbookModule)
 local UpgradeCatalogue = require(Shared.UpgradeCatalogue)
 
 local ClientState = require(script.Parent.ClientState)
+local LobbyPanelController = require(script.Parent.LobbyPanelController)
+local MinimapController = require(script.Parent.MinimapController)
+local PartyFrameController = require(script.Parent.PartyFrameController)
 local SpellInputController = require(script.Parent.SpellInputController)
+local Toast = require(script.Parent.Toast)
+local UIKit = require(script.Parent.UIKit)
 
 local HUDController = {}
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
--- Palette ---------------------------------------------------------------------
-local COLORS = {
-	Panel = Color3.fromRGB(24, 26, 38),
-	PanelLight = Color3.fromRGB(38, 41, 58),
-	Accent = Color3.fromRGB(120, 150, 255),
-	Health = Color3.fromRGB(220, 70, 70),
-	Mana = Color3.fromRGB(70, 130, 240),
-	Gold = Color3.fromRGB(240, 200, 90),
-	Essence = Color3.fromRGB(160, 110, 240),
-	Text = Color3.fromRGB(240, 240, 245),
-	Dim = Color3.fromRGB(160, 165, 180),
-	Danger = Color3.fromRGB(230, 80, 80),
-}
+local COLORS = UIKit.Colors
 
--- Element accent colours for skill-icon frames (6.1: рамка по цвету стихии).
-local ELEMENT_COLORS: { [string]: Color3 } = {
-	Fire = Color3.fromRGB(255, 90, 40),
-	Ice = Color3.fromRGB(120, 200, 255),
-	Earth = Color3.fromRGB(180, 140, 90),
-	Lightning = Color3.fromRGB(255, 235, 110),
-	Holy = Color3.fromRGB(255, 225, 150),
-	Shadow = Color3.fromRGB(170, 110, 230),
-}
-
--- UI factory helpers ----------------------------------------------------------
-
-local function corner(parent: Instance, radius: number)
-	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(0, radius)
-	c.Parent = parent
-end
-
-local function makeFrame(props: { [string]: any }): Frame
-	local f = Instance.new("Frame")
-	f.BackgroundColor3 = props.Color or COLORS.Panel
-	f.BackgroundTransparency = props.Transparency or 0
-	f.BorderSizePixel = 0
-	f.Size = props.Size or UDim2.fromOffset(100, 100)
-	f.Position = props.Position or UDim2.fromScale(0, 0)
-	f.AnchorPoint = props.AnchorPoint or Vector2.zero
-	f.Visible = props.Visible ~= false
-	if props.Parent then
-		f.Parent = props.Parent
-	end
-	if props.Radius then
-		corner(f, props.Radius)
-	end
-	return f
-end
-
-local function makeText(props: { [string]: any }): TextLabel
-	local t = Instance.new("TextLabel")
-	t.BackgroundTransparency = 1
-	t.Font = props.Font or Enum.Font.GothamMedium
-	t.Text = props.Text or ""
-	t.TextColor3 = props.TextColor or COLORS.Text
-	t.TextScaled = props.TextScaled or false
-	t.TextSize = props.TextSize or 16
-	t.TextXAlignment = props.XAlign or Enum.TextXAlignment.Center
-	t.Size = props.Size or UDim2.fromScale(1, 1)
-	t.Position = props.Position or UDim2.fromScale(0, 0)
-	t.AnchorPoint = props.AnchorPoint or Vector2.zero
-	if props.Parent then
-		t.Parent = props.Parent
-	end
-	return t
-end
-
-local function makeButton(props: { [string]: any }): TextButton
-	local b = Instance.new("TextButton")
-	b.BackgroundColor3 = props.Color or COLORS.Accent
-	b.BorderSizePixel = 0
-	b.AutoButtonColor = true
-	b.Font = Enum.Font.GothamBold
-	b.Text = props.Text or ""
-	b.TextColor3 = props.TextColor or COLORS.Text
-	b.TextSize = props.TextSize or 15
-	b.Size = props.Size or UDim2.fromOffset(160, 40)
-	b.Position = props.Position or UDim2.fromScale(0, 0)
-	b.AnchorPoint = props.AnchorPoint or Vector2.zero
-	if props.Parent then
-		b.Parent = props.Parent
-	end
-	corner(b, props.Radius or 8)
-	return b
-end
-
--- Root ------------------------------------------------------------------------
+-- Root widgets ----------------------------------------------------------------
 
 local gui: ScreenGui
 local hpFill: Frame, manaFill: Frame, hpText: TextLabel, manaText: TextLabel
 local goldText: TextLabel, essenceText: TextLabel, levelText: TextLabel
 local waveText: TextLabel, enemyText: TextLabel, baseFill: Frame, baseText: TextLabel, countdownText: TextLabel
 local skillSlots: { [string]: { Button: TextButton, Overlay: Frame, CdText: TextLabel, NameText: TextLabel, Stroke: UIStroke } } = {}
-local notifyHolder: Frame
 local shopPanel: Frame
-local bookPanel: Frame
+local shopContent: ScrollingFrame
+local shopTabBar: Frame
 local resultsPanel: Frame
 
 local SLOT_ORDER = { "Basic", "Q", "E", "Ultimate" }
 local SLOT_KEYS = { Basic = "ЛКМ", Q = "Q", E = "E", Ultimate = "R" }
 
--- Build: top status (wave / base) --------------------------------------------
+-- The shop tab currently shown: "Global" or a spell id.
+local shopTab = "Global"
+
+-- Top status (wave / base) ----------------------------------------------------
 
 local function buildTopStatus(parent: Instance)
-	local holder = makeFrame({
+	local holder = UIKit.frame({
 		Parent = parent,
 		Color = COLORS.Panel,
 		Transparency = 0.15,
@@ -143,7 +69,7 @@ local function buildTopStatus(parent: Instance)
 		AnchorPoint = Vector2.new(0.5, 0),
 	})
 
-	waveText = makeText({
+	waveText = UIKit.text({
 		Parent = holder,
 		Text = "Волна 0",
 		Font = Enum.Font.GothamBold,
@@ -152,7 +78,7 @@ local function buildTopStatus(parent: Instance)
 		Position = UDim2.fromOffset(12, 6),
 		XAlign = Enum.TextXAlignment.Left,
 	})
-	enemyText = makeText({
+	enemyText = UIKit.text({
 		Parent = holder,
 		Text = "Врагов: 0",
 		TextColor = COLORS.Dim,
@@ -161,7 +87,7 @@ local function buildTopStatus(parent: Instance)
 		Position = UDim2.fromOffset(12, 32),
 		XAlign = Enum.TextXAlignment.Left,
 	})
-	countdownText = makeText({
+	countdownText = UIKit.text({
 		Parent = holder,
 		Text = "",
 		TextColor = COLORS.Accent,
@@ -172,32 +98,26 @@ local function buildTopStatus(parent: Instance)
 		XAlign = Enum.TextXAlignment.Right,
 	})
 
-	-- Base health bar.
-	local barBg = makeFrame({
+	local bg
+	bg, baseFill = UIKit.bar({
 		Parent = holder,
-		Color = COLORS.PanelLight,
-		Radius = 6,
+		FillColor = Color3.fromRGB(120, 200, 255),
 		Size = UDim2.new(1, -24, 0, 14),
 		Position = UDim2.new(0, 12, 1, -20),
 	})
-	baseFill = makeFrame({
-		Parent = barBg,
-		Color = Color3.fromRGB(120, 200, 255),
-		Radius = 6,
-		Size = UDim2.fromScale(1, 1),
-	})
-	baseText = makeText({
-		Parent = barBg,
+	baseText = UIKit.text({
+		Parent = bg,
 		Text = "База 1000/1000",
 		TextSize = 12,
 		Font = Enum.Font.GothamBold,
+		ZIndex = 3,
 	})
 end
 
--- Build: currency (top-left) --------------------------------------------------
+-- Currency (top-left) ---------------------------------------------------------
 
 local function buildCurrency(parent: Instance)
-	local holder = makeFrame({
+	local holder = UIKit.frame({
 		Parent = parent,
 		Color = COLORS.Panel,
 		Transparency = 0.15,
@@ -205,7 +125,7 @@ local function buildCurrency(parent: Instance)
 		Size = UDim2.fromOffset(180, 78),
 		Position = UDim2.fromOffset(12, 12),
 	})
-	levelText = makeText({
+	levelText = UIKit.text({
 		Parent = holder,
 		Text = "Ур. 1",
 		Font = Enum.Font.GothamBold,
@@ -214,7 +134,7 @@ local function buildCurrency(parent: Instance)
 		Position = UDim2.fromOffset(12, 6),
 		XAlign = Enum.TextXAlignment.Left,
 	})
-	goldText = makeText({
+	goldText = UIKit.text({
 		Parent = holder,
 		Text = "💰 0",
 		TextColor = COLORS.Gold,
@@ -223,7 +143,7 @@ local function buildCurrency(parent: Instance)
 		Position = UDim2.fromOffset(12, 28),
 		XAlign = Enum.TextXAlignment.Left,
 	})
-	essenceText = makeText({
+	essenceText = UIKit.text({
 		Parent = holder,
 		Text = "🔮 0",
 		TextColor = COLORS.Essence,
@@ -234,10 +154,10 @@ local function buildCurrency(parent: Instance)
 	})
 end
 
--- Build: HP / mana (bottom-left) ---------------------------------------------
+-- Vitals (bottom-left) --------------------------------------------------------
 
 local function buildVitals(parent: Instance)
-	local holder = makeFrame({
+	local holder = UIKit.frame({
 		Parent = parent,
 		Color = COLORS.Panel,
 		Transparency = 0.15,
@@ -248,15 +168,14 @@ local function buildVitals(parent: Instance)
 	})
 
 	local function bar(y: number, color: Color3): (Frame, TextLabel)
-		local bg = makeFrame({
+		local bg, fill = UIKit.bar({
 			Parent = holder,
-			Color = COLORS.PanelLight,
+			FillColor = color,
 			Radius = 8,
 			Size = UDim2.new(1, -24, 0, 22),
 			Position = UDim2.new(0, 12, 0, y),
 		})
-		local fill = makeFrame({ Parent = bg, Color = color, Radius = 8, Size = UDim2.fromScale(1, 1) })
-		local label = makeText({ Parent = bg, Text = "", TextSize = 13, Font = Enum.Font.GothamBold })
+		local label = UIKit.text({ Parent = bg, Text = "", TextSize = 13, Font = Enum.Font.GothamBold, ZIndex = 3 })
 		return fill, label
 	end
 
@@ -264,36 +183,34 @@ local function buildVitals(parent: Instance)
 	manaFill, manaText = bar(40, COLORS.Mana)
 end
 
--- Build: skill bar (bottom-center) -------------------------------------------
+-- Skill bar (bottom-centre) ---------------------------------------------------
 
 local function buildSkillBar(parent: Instance)
-	local holder = makeFrame({
+	local holder = UIKit.frame({
 		Parent = parent,
 		Transparency = 1,
 		Size = UDim2.fromOffset(4 * 76 + 3 * 10, 92),
 		Position = UDim2.new(0.5, 0, 1, -12),
 		AnchorPoint = Vector2.new(0.5, 1),
 	})
-	local list = Instance.new("UIListLayout")
+	local list = UIKit.list(holder, 10)
 	list.FillDirection = Enum.FillDirection.Horizontal
-	list.Padding = UDim.new(0, 10)
 	list.HorizontalAlignment = Enum.HorizontalAlignment.Center
 	list.VerticalAlignment = Enum.VerticalAlignment.Bottom
-	list.Parent = holder
 
-	for _, slot in SLOT_ORDER do
-		local cell = makeFrame({ Parent = holder, Transparency = 1, Size = UDim2.fromOffset(76, 92) })
+	for i, slot in SLOT_ORDER do
+		local cell = UIKit.frame({ Parent = holder, Transparency = 1, Size = UDim2.fromOffset(76, 92) })
+		cell.LayoutOrder = i
 
-		local nameText = makeText({
+		local nameText = UIKit.text({
 			Parent = cell,
 			Text = slot,
 			TextColor = COLORS.Dim,
 			TextSize = 12,
 			Size = UDim2.new(1, 0, 0, 14),
-			Position = UDim2.fromOffset(0, 0),
 		})
 
-		local button = makeButton({
+		local button = UIKit.button({
 			Parent = cell,
 			Color = COLORS.PanelLight,
 			Text = "",
@@ -303,13 +220,9 @@ local function buildSkillBar(parent: Instance)
 		})
 
 		-- Element-coloured frame around the icon (recoloured when book changes).
-		local stroke = Instance.new("UIStroke")
-		stroke.Thickness = 2.5
-		stroke.Color = COLORS.Accent
-		stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-		stroke.Parent = button
+		local stroke = UIKit.stroke(button, COLORS.Accent, 2.5)
 
-		makeText({
+		UIKit.text({
 			Parent = button,
 			Text = SLOT_KEYS[slot] or slot,
 			Font = Enum.Font.GothamBold,
@@ -317,10 +230,11 @@ local function buildSkillBar(parent: Instance)
 			TextSize = 14,
 			Size = UDim2.new(1, 0, 0, 16),
 			Position = UDim2.new(0, 0, 0, 4),
+			ZIndex = 3,
 		})
 
 		-- Cooldown overlay fills from the bottom up as cooldown elapses.
-		local overlay = makeFrame({
+		local overlay = UIKit.frame({
 			Parent = button,
 			Color = Color3.fromRGB(10, 10, 14),
 			Transparency = 0.35,
@@ -328,13 +242,14 @@ local function buildSkillBar(parent: Instance)
 			Size = UDim2.fromScale(1, 0),
 			Position = UDim2.fromScale(0, 1),
 			AnchorPoint = Vector2.new(0, 1),
+			ZIndex = 2,
 		})
-		local cdText = makeText({
+		local cdText = UIKit.text({
 			Parent = button,
 			Text = "",
 			Font = Enum.Font.GothamBold,
 			TextSize = 18,
-			Size = UDim2.fromScale(1, 1),
+			ZIndex = 4,
 		})
 
 		skillSlots[slot] = { Button = button, Overlay = overlay, CdText = cdText, NameText = nameText, Stroke = stroke }
@@ -344,236 +259,264 @@ end
 --[[ Recolours the skill-icon frames to the equipped book's element. ]]
 local function updateSkillFrames()
 	local book = SpellbookModule.getBook(ClientState.SelectedBook)
-	local color = book and ELEMENT_COLORS[book.Element] or COLORS.Accent
+	local color = UIKit.elementColor(book and book.Element)
 	for _, refs in skillSlots do
 		refs.Stroke.Color = color
 	end
 end
 
--- Build: notifications --------------------------------------------------------
+-- Shop (between waves) --------------------------------------------------------
 
-local function buildNotifications(parent: Instance)
-	notifyHolder = makeFrame({
-		Parent = parent,
-		Transparency = 1,
-		Size = UDim2.fromOffset(300, 260),
-		Position = UDim2.new(1, -12, 0, 100),
-		AnchorPoint = Vector2.new(1, 0),
+local renderShop -- forward declaration; tab buttons re-render it
+
+--[[ One purchasable row: label, level pips and a gold-priced buy button. ]]
+local function shopRow(order: number, label: string, description: string, level: number, maxLevel: number, cost: number?, onBuy: () -> ())
+	local row = UIKit.frame({
+		Parent = shopContent,
+		Color = COLORS.PanelLight,
+		Radius = 10,
+		Size = UDim2.new(1, 0, 0, 62),
 	})
-	local list = Instance.new("UIListLayout")
-	list.FillDirection = Enum.FillDirection.Vertical
-	list.VerticalAlignment = Enum.VerticalAlignment.Top
-	list.HorizontalAlignment = Enum.HorizontalAlignment.Right
-	list.Padding = UDim.new(0, 6)
-	list.Parent = notifyHolder
-end
+	row.LayoutOrder = order
 
-local KIND_COLORS = {
-	info = COLORS.PanelLight,
-	warn = Color3.fromRGB(140, 60, 60),
-	reward = Color3.fromRGB(60, 110, 70),
-	levelup = Color3.fromRGB(90, 80, 140),
-	boss = Color3.fromRGB(150, 50, 120),
-}
-
-function HUDController.pushNotification(text: string, kind: string?)
-	local color = KIND_COLORS[kind or "info"] or COLORS.PanelLight
-	local toast = makeFrame({
-		Parent = notifyHolder,
-		Color = color,
-		Transparency = 0.1,
-		Radius = 8,
-		Size = UDim2.fromOffset(300, 34),
-	})
-	makeText({
-		Parent = toast,
-		Text = text,
-		TextSize = 15,
+	UIKit.text({
+		Parent = row,
+		Text = label,
 		Font = Enum.Font.GothamBold,
-		Size = UDim2.new(1, -16, 1, 0),
-		Position = UDim2.fromOffset(8, 0),
+		TextSize = 15,
+		Size = UDim2.new(1, -140, 0, 20),
+		Position = UDim2.fromOffset(14, 8),
 		XAlign = Enum.TextXAlignment.Left,
 	})
-	task.delay(3.5, function()
-		local tween = TweenService:Create(toast, TweenInfo.new(0.4), { BackgroundTransparency = 1 })
-		tween:Play()
-		tween.Completed:Wait()
-		toast:Destroy()
-	end)
-end
+	UIKit.text({
+		Parent = row,
+		Text = description,
+		TextColor = COLORS.Dim,
+		TextSize = 12,
+		Wrapped = true,
+		Size = UDim2.new(1, -140, 0, 30),
+		Position = UDim2.fromOffset(14, 28),
+		XAlign = Enum.TextXAlignment.Left,
+		YAlign = Enum.TextYAlignment.Top,
+	})
 
--- Build: shop (intermission) --------------------------------------------------
+	-- Level pips make "3 of 5 bought" readable at a glance.
+	local pips = UIKit.frame({
+		Parent = row,
+		Transparency = 1,
+		Size = UDim2.fromOffset(maxLevel * 12, 8),
+		Position = UDim2.new(1, -124, 0, 12),
+		AnchorPoint = Vector2.new(1, 0),
+	})
+	local pipLayout = UIKit.list(pips, 3)
+	pipLayout.FillDirection = Enum.FillDirection.Horizontal
+	for i = 1, maxLevel do
+		local pip = UIKit.frame({
+			Parent = pips,
+			Color = i <= level and COLORS.Gold or COLORS.Panel,
+			Radius = 3,
+			Size = UDim2.fromOffset(9, 8),
+		})
+		pip.LayoutOrder = i
+	end
 
-local function buildShop(parent: Instance)
-	shopPanel = makeFrame({
-		Parent = parent,
-		Color = COLORS.Panel,
-		Transparency = 0.05,
-		Radius = 14,
-		Size = UDim2.fromOffset(360, 320),
+	local maxed = level >= maxLevel
+	local button = UIKit.button({
+		Parent = row,
+		Color = maxed and COLORS.Panel or COLORS.Accent,
+		Text = maxed and "МАКС" or ("%d 💰"):format(cost or 0),
+		TextSize = 14,
+		Size = UDim2.fromOffset(104, 40),
 		Position = UDim2.new(1, -12, 0.5, 0),
 		AnchorPoint = Vector2.new(1, 0.5),
-		Visible = false,
+		Radius = 8,
 	})
-	makeText({
-		Parent = shopPanel,
-		Text = "🛒 Магазин апгрейдов",
-		Font = Enum.Font.GothamBold,
-		TextSize = 20,
-		Size = UDim2.new(1, 0, 0, 40),
-		Position = UDim2.fromOffset(0, 8),
-	})
-	makeText({
-		Parent = shopPanel,
-		Text = "Доступно между волнами",
-		TextColor = COLORS.Dim,
-		TextSize = 13,
-		Size = UDim2.new(1, 0, 0, 16),
-		Position = UDim2.fromOffset(0, 40),
-	})
-
-	local listHolder = makeFrame({
-		Parent = shopPanel,
-		Transparency = 1,
-		Size = UDim2.new(1, -24, 1, -80),
-		Position = UDim2.fromOffset(12, 66),
-	})
-	local list = Instance.new("UIListLayout")
-	list.Padding = UDim.new(0, 8)
-	list.Parent = listHolder
-
-	for _, id in UpgradeCatalogue.Order do
-		local entry = UpgradeCatalogue.Entries[id]
-		local btn = makeButton({
-			Parent = listHolder,
-			Color = COLORS.PanelLight,
-			Text = ("%s   (от %d💰)"):format(entry.Label, entry.BaseCost),
-			Size = UDim2.new(1, 0, 0, 44),
-			Radius = 10,
-		})
-		btn.Activated:Connect(function()
-			local remote = Remotes.func(Remotes.Names.PurchaseUpgrade)
-			local ok, result = pcall(function()
-				return remote:InvokeServer(id)
-			end)
-			if ok and type(result) == "table" then
-				HUDController.pushNotification(result.Message or "", result.Ok and "reward" or "warn")
-			end
-		end)
+	if not maxed then
+		button.Activated:Connect(onBuy)
 	end
 end
 
--- Build: book selector (lobby / idle) ----------------------------------------
+local function renderGlobalShop()
+	for i, id in UpgradeCatalogue.Order do
+		local entry = UpgradeCatalogue.Entries[id]
+		local level = ClientState.GlobalLevels[id] or 0
+		shopRow(
+			i,
+			entry.Label,
+			"Действует на все заклинания книги.",
+			level,
+			entry.MaxLevel,
+			UpgradeCatalogue.costFor(id, level),
+			function()
+				local ok, result = pcall(function()
+					return Remotes.func(Remotes.Names.PurchaseUpgrade):InvokeServer(id)
+				end)
+				if ok and type(result) == "table" then
+					Toast.push(result.Message or "", result.Ok and "reward" or "warn")
+				end
+				renderShop()
+			end
+		)
+	end
+end
 
-local function buildBookPanel(parent: Instance)
-	bookPanel = makeFrame({
+local function renderSpellShop(spellId: string)
+	local spell = SpellbookModule.getSpellById(spellId)
+	if not spell then
+		return
+	end
+	local isUltimate = spell.Slot == "Ultimate"
+
+	for i, node in UpgradeCatalogue.treeFor(spellId, isUltimate) do
+		local level = ClientState.getSpellNodeLevel(spellId, node.Id)
+		shopRow(
+			i,
+			node.Label,
+			node.Description,
+			level,
+			node.MaxLevel,
+			UpgradeCatalogue.spellNodeCost(node, level),
+			function()
+				local ok, result = pcall(function()
+					return Remotes.func(Remotes.Names.PurchaseSpellNode):InvokeServer({
+						SpellId = spellId,
+						NodeId = node.Id,
+					})
+				end)
+				if ok and type(result) == "table" then
+					Toast.push(result.Message or "", result.Ok and "reward" or "warn")
+				end
+				renderShop()
+			end
+		)
+	end
+end
+
+--[[ Rebuilds the tab strip (Общие + one tab per equipped spell) and the rows
+     for whichever tab is active. ]]
+function renderShop()
+	if not shopPanel.Visible then
+		return
+	end
+
+	for _, child in shopTabBar:GetChildren() do
+		if not child:IsA("UIListLayout") then
+			child:Destroy()
+		end
+	end
+	for _, child in shopContent:GetChildren() do
+		if not child:IsA("UIListLayout") then
+			child:Destroy()
+		end
+	end
+
+	local spells = ClientState.getEquippedSpells()
+
+	-- A book change can leave the active tab pointing at a spell we no longer
+	-- have; fall back to the global tab in that case.
+	if shopTab ~= "Global" then
+		local stillEquipped = false
+		for _, spell in spells do
+			if spell.Id == shopTab then
+				stillEquipped = true
+				break
+			end
+		end
+		if not stillEquipped then
+			shopTab = "Global"
+		end
+	end
+
+	local function addTab(id: string, label: string, order: number)
+		local button = UIKit.button({
+			Parent = shopTabBar,
+			Color = shopTab == id and COLORS.Accent or COLORS.PanelLight,
+			Text = label,
+			TextSize = 12,
+			Size = UDim2.fromOffset(96, 32),
+			Radius = 8,
+		})
+		button.LayoutOrder = order
+		button.Activated:Connect(function()
+			shopTab = id
+			renderShop()
+		end)
+	end
+
+	addTab("Global", "Общие", 0)
+	for i, spell in spells do
+		addTab(spell.Id, spell.Name, i)
+	end
+
+	if shopTab == "Global" then
+		renderGlobalShop()
+	else
+		renderSpellShop(shopTab)
+	end
+end
+
+local function buildShop(parent: Instance)
+	shopPanel = UIKit.frame({
 		Parent = parent,
 		Color = COLORS.Panel,
 		Transparency = 0.03,
 		Radius = 14,
-		Size = UDim2.fromOffset(420, 380),
+		Size = UDim2.fromOffset(520, 400),
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Visible = false,
+		ZIndex = 8,
 	})
-	makeText({
-		Parent = bookPanel,
-		Text = "📖 Выбор книги заклинаний",
+
+	UIKit.text({
+		Parent = shopPanel,
+		Text = "🛒 Магазин апгрейдов",
 		Font = Enum.Font.GothamBold,
 		TextSize = 20,
-		Size = UDim2.new(1, 0, 0, 40),
-		Position = UDim2.fromOffset(0, 10),
+		Size = UDim2.new(1, -60, 0, 28),
+		Position = UDim2.fromOffset(16, 12),
+		XAlign = Enum.TextXAlignment.Left,
+		ZIndex = 9,
 	})
 
-	local scroll = Instance.new("ScrollingFrame")
-	scroll.BackgroundTransparency = 1
-	scroll.BorderSizePixel = 0
-	scroll.Size = UDim2.new(1, -24, 1, -60)
-	scroll.Position = UDim2.fromOffset(12, 52)
-	scroll.CanvasSize = UDim2.new()
-	scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-	scroll.ScrollBarThickness = 6
-	scroll.Parent = bookPanel
-	local list = Instance.new("UIListLayout")
-	list.Padding = UDim.new(0, 8)
-	list.Parent = scroll
-
-	local function refresh()
-		-- Rebuilt each open to reflect unlock state.
-		for _, child in scroll:GetChildren() do
-			if child:IsA("Frame") then
-				child:Destroy()
-			end
-		end
-		for _, bookId in SpellbookModule.getBookIds() do
-			local book = SpellbookModule.getBook(bookId)
-			if not book then
-				continue
-			end
-			local unlocked = ClientState.UnlockedBooks[bookId] == true
-			local selected = ClientState.SelectedBook == bookId
-
-			local row = makeFrame({
-				Parent = scroll,
-				Color = selected and COLORS.Accent or COLORS.PanelLight,
-				Radius = 10,
-				Size = UDim2.new(1, 0, 0, 70),
-			})
-			makeText({
-				Parent = row,
-				Text = book.Name,
-				Font = Enum.Font.GothamBold,
-				TextSize = 16,
-				Size = UDim2.new(1, -110, 0, 22),
-				Position = UDim2.fromOffset(12, 8),
-				XAlign = Enum.TextXAlignment.Left,
-			})
-			makeText({
-				Parent = row,
-				Text = ("%s • %s"):format(book.Role, book.Description),
-				TextColor = COLORS.Dim,
-				TextSize = 12,
-				Size = UDim2.new(1, -110, 0, 34),
-				Position = UDim2.fromOffset(12, 30),
-				XAlign = Enum.TextXAlignment.Left,
-			})
-
-			local action = makeButton({
-				Parent = row,
-				Color = unlocked and COLORS.Accent or COLORS.Essence,
-				Text = unlocked and (selected and "Выбрано" or "Выбрать") or ("🔮 " .. book.UnlockCost),
-				Size = UDim2.fromOffset(92, 40),
-				Position = UDim2.new(1, -12, 0.5, 0),
-				AnchorPoint = Vector2.new(1, 0.5),
-				Radius = 8,
-			})
-			action.Activated:Connect(function()
-				local remote = Remotes.func(Remotes.Names.SelectSpellbook)
-				local payload = { BookId = bookId, Action = unlocked and "select" or "unlock" }
-				local ok, result = pcall(function()
-					return remote:InvokeServer(payload)
-				end)
-				if ok and type(result) == "table" then
-					HUDController.pushNotification(result.Message or "", result.Ok and "reward" or "warn")
-				end
-			end)
-		end
-	end
-
-	bookPanel:GetAttributeChangedSignal("Refresh"):Connect(refresh)
-	ClientState.Changed:Connect(function()
-		if bookPanel.Visible then
-			refresh()
-		end
+	local close = UIKit.button({
+		Parent = shopPanel,
+		Color = COLORS.PanelLight,
+		Text = "✕",
+		TextSize = 16,
+		Size = UDim2.fromOffset(32, 32),
+		Position = UDim2.new(1, -12, 0, 12),
+		AnchorPoint = Vector2.new(1, 0),
+		Radius = 8,
+		ZIndex = 10,
+	})
+	close.Activated:Connect(function()
+		shopPanel.Visible = false
 	end)
-	-- Prime once.
-	refresh()
+
+	shopTabBar = UIKit.frame({
+		Parent = shopPanel,
+		Transparency = 1,
+		Size = UDim2.new(1, -32, 0, 32),
+		Position = UDim2.fromOffset(16, 46),
+		ZIndex = 9,
+	})
+	local tabLayout = UIKit.list(shopTabBar, 6)
+	tabLayout.FillDirection = Enum.FillDirection.Horizontal
+
+	shopContent = UIKit.scroll({
+		Parent = shopPanel,
+		Size = UDim2.new(1, -32, 1, -96),
+		Position = UDim2.fromOffset(16, 86),
+		ZIndex = 9,
+	})
+	UIKit.list(shopContent, 8)
 end
 
--- Build: results screen -------------------------------------------------------
+-- Results ---------------------------------------------------------------------
 
 local function buildResults(parent: Instance)
-	resultsPanel = makeFrame({
+	resultsPanel = UIKit.frame({
 		Parent = parent,
 		Color = COLORS.Panel,
 		Transparency = 0.02,
@@ -582,6 +525,7 @@ local function buildResults(parent: Instance)
 		Position = UDim2.fromScale(0.5, 0.5),
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Visible = false,
+		ZIndex = 12,
 	})
 end
 
@@ -591,13 +535,14 @@ function HUDController.showResults(data: { [string]: any })
 			child:Destroy()
 		end
 	end
-	makeText({
+	UIKit.text({
 		Parent = resultsPanel,
 		Text = "Матч окончен",
 		Font = Enum.Font.GothamBold,
 		TextSize = 26,
 		Size = UDim2.new(1, 0, 0, 44),
 		Position = UDim2.fromOffset(0, 16),
+		ZIndex = 13,
 	})
 	local rows = {
 		{ "Волн пройдено", tostring(data.WavesCleared or 0) },
@@ -606,7 +551,7 @@ function HUDController.showResults(data: { [string]: any })
 		{ "Исцелено", tostring(data.Healing or 0) },
 	}
 	for i, row in rows do
-		makeText({
+		UIKit.text({
 			Parent = resultsPanel,
 			Text = row[1],
 			TextColor = COLORS.Dim,
@@ -614,8 +559,9 @@ function HUDController.showResults(data: { [string]: any })
 			Size = UDim2.new(0.5, -20, 0, 30),
 			Position = UDim2.fromOffset(24, 60 + (i - 1) * 36),
 			XAlign = Enum.TextXAlignment.Left,
+			ZIndex = 13,
 		})
-		makeText({
+		UIKit.text({
 			Parent = resultsPanel,
 			Text = row[2],
 			Font = Enum.Font.GothamBold,
@@ -623,14 +569,16 @@ function HUDController.showResults(data: { [string]: any })
 			Size = UDim2.new(0.5, -20, 0, 30),
 			Position = UDim2.new(0.5, 0, 0, 60 + (i - 1) * 36),
 			XAlign = Enum.TextXAlignment.Right,
+			ZIndex = 13,
 		})
 	end
-	local close = makeButton({
+	local close = UIKit.button({
 		Parent = resultsPanel,
 		Text = "Продолжить",
 		Size = UDim2.fromOffset(180, 44),
 		Position = UDim2.new(0.5, 0, 1, -20),
 		AnchorPoint = Vector2.new(0.5, 1),
+		ZIndex = 13,
 	})
 	close.Activated:Connect(function()
 		resultsPanel.Visible = false
@@ -650,7 +598,7 @@ local function updateVitals()
 		hpFill.Size = UDim2.fromScale(frac, 1)
 		hpText.Text = ("%d / %d"):format(math.ceil(humanoid.Health), humanoid.MaxHealth)
 
-		-- Damage flash: briefly whiten the HP bar when health drops (6.1).
+		-- Damage flash: briefly whiten the HP bar when health drops (§6.1).
 		if lastHealth >= 0 and humanoid.Health < lastHealth - 0.5 then
 			hpFill.BackgroundColor3 = Color3.fromRGB(255, 235, 235)
 			TweenService:Create(hpFill, TweenInfo.new(0.35), { BackgroundColor3 = COLORS.Health }):Play()
@@ -669,7 +617,7 @@ local function updateCooldowns()
 		local frac = SpellInputController.getCooldownFraction(slot)
 		refs.Overlay.Size = UDim2.fromScale(1, frac)
 		if frac > 0 and spell then
-			local remaining = frac * spell.Cooldown
+			local remaining = frac * ClientState.getEffectiveCooldown(spell)
 			refs.CdText.Text = remaining >= 1 and tostring(math.ceil(remaining)) or ("%.1f"):format(remaining)
 		else
 			refs.CdText.Text = ""
@@ -701,13 +649,22 @@ local function wireRemotes()
 			countdownText.Text = data.Phase == "Active" and "⚔ Бой" or ""
 		end
 
-		-- Shop during intermission; book selector when idle/ended.
-		shopPanel.Visible = (data.Phase == "Intermission")
+		-- The shop opens for the intermission and closes when the wave starts.
+		-- Players can dismiss it early; it reopens next intermission.
+		if data.Phase == "Intermission" then
+			if not shopPanel.Visible then
+				shopPanel.Visible = true
+				renderShop()
+			end
+		else
+			shopPanel.Visible = false
+		end
+
+		-- Between matches, the lobby is the natural thing to be looking at.
 		if data.Phase == "Idle" or data.Phase == "Ended" then
-			bookPanel:SetAttribute("Refresh", os.clock())
-			bookPanel.Visible = true
+			LobbyPanelController.setVisible(true)
 		elseif data.Phase == "Active" then
-			bookPanel.Visible = false
+			LobbyPanelController.setVisible(false)
 		end
 	end)
 
@@ -725,12 +682,15 @@ local function wireRemotes()
 	end)
 
 	Remotes.event(Remotes.Names.Notify).OnClientEvent:Connect(function(data)
-		HUDController.pushNotification(data.Text or "", data.Kind)
+		Toast.push(data.Text or "", data.Kind)
 	end)
 
 	Remotes.event(Remotes.Names.MatchEnded).OnClientEvent:Connect(function(data)
 		HUDController.showResults(data)
 	end)
+
+	-- Purchased levels arriving from the server change every price in the shop.
+	ClientState.UpgradesChanged:Connect(renderShop)
 end
 
 -- Lifecycle -------------------------------------------------------------------
@@ -747,24 +707,25 @@ function HUDController.Init()
 	buildCurrency(gui)
 	buildVitals(gui)
 	buildSkillBar(gui)
-	buildNotifications(gui)
 	buildShop(gui)
-	buildBookPanel(gui)
 	buildResults(gui)
 
-	-- "Книги" toggle button.
-	local toggle = makeButton({
+	-- Panels owned by their own controllers, mounted into the same ScreenGui.
+	MinimapController.mount(gui)
+	PartyFrameController.mount(gui)
+	LobbyPanelController.mount(gui)
+	-- Toasts stack below the minimap so the two never overlap.
+	Toast.mount(gui, 192)
+
+	local toggle = UIKit.button({
 		Parent = gui,
-		Text = "📖 Книги",
+		Text = "📖 Лобби",
 		Color = COLORS.PanelLight,
 		Size = UDim2.fromOffset(110, 34),
 		Position = UDim2.fromOffset(200, 12),
 		Radius = 8,
 	})
-	toggle.Activated:Connect(function()
-		bookPanel:SetAttribute("Refresh", os.clock())
-		bookPanel.Visible = not bookPanel.Visible
-	end)
+	toggle.Activated:Connect(LobbyPanelController.toggle)
 end
 
 function HUDController.Start()

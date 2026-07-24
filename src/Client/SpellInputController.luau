@@ -114,7 +114,7 @@ function SpellInputController.getCooldownFraction(slot: string): number
 	if remaining <= 0 then
 		return 0
 	end
-	return math.clamp(remaining / spell.Cooldown, 0, 1)
+	return math.clamp(remaining / ClientState.getEffectiveCooldown(spell), 0, 1)
 end
 
 local function castSlot(slot: string)
@@ -139,7 +139,7 @@ local function castSlot(slot: string)
 		return
 	end
 
-	cooldownUntil[spell.Id] = os.clock() + spell.Cooldown
+	cooldownUntil[spell.Id] = os.clock() + ClientState.getEffectiveCooldown(spell)
 
 	Remotes.event(Remotes.Names.CastSpell):FireServer({
 		SpellId = spell.Id,

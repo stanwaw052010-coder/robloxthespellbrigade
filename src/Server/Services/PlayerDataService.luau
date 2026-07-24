@@ -29,6 +29,10 @@ export type Profile = {
 	Level: number,
 	SelectedBook: string,
 	UnlockedBooks: { [string]: boolean },
+	-- Equipped cosmetics, keyed by kind ("Aura" | "Hat").
+	Cosmetics: { [string]: string },
+	-- Purchased cosmetics, keyed "<kind>:<id>". Free entries are never stored.
+	UnlockedCosmetics: { [string]: boolean },
 	Stats: {
 		Kills: number,
 		DamageDealt: number,
@@ -43,6 +47,10 @@ local AUTOSAVE_INTERVAL = 120 -- seconds
 
 local PlayerDataService = {}
 PlayerDataService.ProfileLoaded = Signal.new() -- fires (player, profile)
+-- Fires (player) whenever something that changes how the character LOOKS was
+-- saved: equipped book (robe tint / spellbook prop) or an equipped cosmetic.
+-- CosmeticsService listens so it can rebuild the character's props.
+PlayerDataService.AppearanceChanged = Signal.new()
 
 local store: DataStore? = nil
 local profiles: { [Player]: Profile } = {}
@@ -56,6 +64,8 @@ local function defaultProfile(): Profile
 		Level = 1,
 		SelectedBook = "Fire", -- starter book (free)
 		UnlockedBooks = { Fire = true },
+		Cosmetics = { Aura = "Ember", Hat = "Hood" }, -- free starter set
+		UnlockedCosmetics = {},
 		Stats = {
 			Kills = 0,
 			DamageDealt = 0,
@@ -89,6 +99,12 @@ local function reconcile(loaded: any): Profile
 	if type(base.UnlockedBooks) ~= "table" then
 		base.UnlockedBooks = { Fire = true }
 	end
+	if type(base.Cosmetics) ~= "table" then
+		base.Cosmetics = { Aura = "Ember", Hat = "Hood" }
+	end
+	if type(base.UnlockedCosmetics) ~= "table" then
+		base.UnlockedCosmetics = {}
+	end
 	return base
 end
 
@@ -109,6 +125,8 @@ local function pushStats(player: Player)
 		Level = profile.Level,
 		SelectedBook = profile.SelectedBook,
 		UnlockedBooks = profile.UnlockedBooks,
+		Cosmetics = profile.Cosmetics,
+		UnlockedCosmetics = profile.UnlockedCosmetics,
 	})
 end
 PlayerDataService.pushStats = pushStats
@@ -185,7 +203,8 @@ function PlayerDataService.increment(player: Player, field: string, delta: numbe
 		return nil
 	end
 	local newValue = current + delta
-	;(profile :: any)[field] = newValue
+	local fields = profile :: any
+	fields[field] = newValue
 	pushStats(player)
 	return newValue
 end
@@ -200,6 +219,7 @@ function PlayerDataService.setSelectedBook(player: Player, bookId: string): bool
 	end
 	profile.SelectedBook = bookId
 	pushStats(player)
+	PlayerDataService.AppearanceChanged:Fire(player)
 	return true
 end
 
@@ -212,14 +232,37 @@ function PlayerDataService.unlockBook(player: Player, bookId: string)
 	pushStats(player)
 end
 
+--[[ Equips a cosmetic. `kind` is "Aura" | "Hat". Ownership is validated by
+     CosmeticsService before this is called. ]]
+function PlayerDataService.setCosmetic(player: Player, kind: string, id: string)
+	local profile = profiles[player]
+	if not profile then
+		return
+	end
+	profile.Cosmetics[kind] = id
+	pushStats(player)
+	PlayerDataService.AppearanceChanged:Fire(player)
+end
+
+--[[ Records a purchased cosmetic under the flat "<kind>:<id>" key. ]]
+function PlayerDataService.unlockCosmetic(player: Player, kind: string, id: string)
+	local profile = profiles[player]
+	if not profile then
+		return
+	end
+	profile.UnlockedCosmetics[kind .. ":" .. id] = true
+	pushStats(player)
+end
+
 function PlayerDataService.addStat(player: Player, field: string, delta: number)
 	local profile = profiles[player]
 	if not profile then
 		return
 	end
-	local current = (profile.Stats :: any)[field]
+	local stats = profile.Stats :: any
+	local current = stats[field]
 	if type(current) == "number" then
-		;(profile.Stats :: any)[field] = current + delta
+		stats[field] = current + delta
 	end
 end
 

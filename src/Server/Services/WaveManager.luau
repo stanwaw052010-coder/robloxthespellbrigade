@@ -23,6 +23,7 @@ local EconomyService = require(script.Parent.EconomyService)
 local UpgradeService = require(script.Parent.UpgradeService)
 local DamageService = require(script.Parent.DamageService)
 local PlayerDataService = require(script.Parent.PlayerDataService)
+local MatchmakingService = require(script.Parent.MatchmakingService)
 
 local WaveManager = {}
 
@@ -257,6 +258,13 @@ function WaveManager.Start()
 			Text = "База уничтожена! Матч окончен.",
 			Kind = "warn",
 		})
+	end)
+
+	-- A party leader pressing "start" in the lobby kicks the match off here
+	-- (either because matchmaking is off, or because the teleport fell back to
+	-- this instance).
+	MatchmakingService.LocalStartRequested:Connect(function()
+		WaveManager.tryStartMatch()
 	end)
 
 	-- Auto-start when the first player is ready.

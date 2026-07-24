@@ -89,6 +89,12 @@ end
 local function buildRig(def: any, position: Vector3): (Model, Humanoid, BasePart)
 	local model = Instance.new("Model")
 	model.Name = def.Id
+	-- Attributes replicate to clients, which is how the minimap tells a boss
+	-- blip from a trash-mob blip without another remote.
+	model:SetAttribute("IsBoss", def.IsBoss == true)
+	model:SetAttribute("EnemyId", def.Id)
+	-- Overridden to true in spawnMinion; the minimap draws summons as allies.
+	model:SetAttribute("IsMinion", false)
 
 	local root = Instance.new("Part")
 	root.Name = "HumanoidRootPart"
@@ -513,6 +519,7 @@ function EnemyService.spawnMinion(defId: string, owner: Player, position: Vector
 		return nil
 	end
 	local model, humanoid, root = buildRig(def, position)
+	model:SetAttribute("IsMinion", true)
 	model.Parent = enemiesFolder
 
 	DamageService.registerMinion(model, def, owner)

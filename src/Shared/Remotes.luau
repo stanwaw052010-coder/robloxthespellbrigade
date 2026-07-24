@@ -20,13 +20,19 @@ Remotes.Names = {
 	CastSpell = "CastSpell", -- fire a spell (RemoteEvent)
 	SelectSpellbook = "SelectSpellbook", -- pick class/book in lobby (RemoteFunction)
 	PurchaseUpgrade = "PurchaseUpgrade", -- buy an in-match upgrade (RemoteFunction)
+	PurchaseSpellNode = "PurchaseSpellNode", -- buy a per-spell tree node (RemoteFunction)
 	RequestJoinMatch = "RequestJoinMatch", -- ready up (RemoteEvent)
+	CosmeticRequest = "CosmeticRequest", -- unlock/equip a cosmetic (RemoteFunction)
+	MatchmakingRequest = "MatchmakingRequest", -- create/join/leave/start a party (RemoteFunction)
 
 	-- Server -> Client (state + presentation)
 	PlayVFX = "PlayVFX", -- spawn a visual effect (RemoteEvent)
 	WaveStateChanged = "WaveStateChanged", -- wave number / phase / countdown
 	BaseHealthChanged = "BaseHealthChanged",
 	PlayerStatsChanged = "PlayerStatsChanged", -- gold / mana / hp / xp
+	PartyStateChanged = "PartyStateChanged", -- ally roster for the party frames
+	SpellTreeChanged = "SpellTreeChanged", -- owned per-spell node levels
+	MatchmakingStateChanged = "MatchmakingStateChanged", -- lobby party roster
 	MatchEnded = "MatchEnded", -- results screen payload
 	Notify = "Notify", -- transient toast messages
 }
@@ -88,6 +94,9 @@ end
 local FUNCTIONS = {
 	[Remotes.Names.SelectSpellbook] = true,
 	[Remotes.Names.PurchaseUpgrade] = true,
+	[Remotes.Names.PurchaseSpellNode] = true,
+	[Remotes.Names.CosmeticRequest] = true,
+	[Remotes.Names.MatchmakingRequest] = true,
 }
 
 --[[

@@ -101,12 +101,18 @@ local function hostileOptions(spell: any)
 	}
 end
 
-local function applyEnemyArea(impact: Vector3, radius: number, spell: any, damage: number, source: Player)
+--[[ Damages every enemy in a radius. `frozenBonus` (Shatter signature) is an
+     extra multiplier applied only to targets currently frozen. ]]
+local function applyEnemyArea(impact: Vector3, radius: number, spell: any, damage: number, source: Player, frozenBonus: number?)
 	local opts = hostileOptions(spell)
 	for _, model in EnemyService.getEnemiesInRadius(impact, radius) do
 		local humanoid = model:FindFirstChildOfClass("Humanoid")
 		if humanoid then
-			DamageService.applyDamage(humanoid, damage, source, opts)
+			local dealt = damage
+			if frozenBonus and DamageService.isFrozen(humanoid) then
+				dealt *= frozenBonus
+			end
+			DamageService.applyDamage(humanoid, dealt, source, opts)
 		end
 	end
 end
@@ -123,9 +129,19 @@ local function applySingleTarget(impact: Vector3, spell: any, damage: number, so
 	return target
 end
 
-local function applyChain(firstHit: Model?, impact: Vector3, radius: number, spell: any, damage: number, source: Player)
-	-- Chain to nearby enemies with falloff (used by projectile spells that
-	-- carry an AreaOfEffect, e.g. Chain Lightning).
+--[[ Chains to nearby enemies with falloff (used by projectile spells that carry
+     an AreaOfEffect, e.g. Chain Lightning). The Overload signature raises
+     `jumps` and softens `falloff`. ]]
+local function applyChain(
+	firstHit: Model?,
+	impact: Vector3,
+	radius: number,
+	spell: any,
+	damage: number,
+	source: Player,
+	jumps: number,
+	falloff: number
+)
 	if not firstHit then
 		return
 	end
@@ -134,11 +150,10 @@ local function applyChain(firstHit: Model?, impact: Vector3, radius: number, spe
 		return
 	end
 	local hit = { [firstHit] = true }
-	local jumps = 3
 	local jumpDamage = damage
 	local from = origin.Position
 	for _ = 1, jumps do
-		jumpDamage *= 0.7
+		jumpDamage *= falloff
 		local candidates = EnemyService.getEnemiesInRadius(from, radius)
 		local next: Model? = nil
 		local bestDist = math.huge
@@ -168,15 +183,33 @@ local function applyChain(firstHit: Model?, impact: Vector3, radius: number, spe
 end
 
 --[[ Heals and/or shields allied players within radius. `healAmount` is negative
-     to heal (0 for none); `shieldPower` > 0 grants a shield. ]]
-local function applyFriendlyArea(impact: Vector3, radius: number, healAmount: number, shieldPower: number, shieldDuration: number, source: Player)
+     to heal (0 for none); `shieldPower` > 0 grants a shield.
+     `overflowShield` (Overflow signature) converts healing wasted on a
+     full-health ally into a temporary shield instead. ]]
+local function applyFriendlyArea(
+	impact: Vector3,
+	radius: number,
+	healAmount: number,
+	shieldPower: number,
+	shieldDuration: number,
+	source: Player,
+	overflowShield: boolean?
+)
 	for _, player in Players:GetPlayers() do
 		local character = player.Character
 		local root = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
 		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 		if root and humanoid and humanoid.Health > 0 and (root.Position - impact).Magnitude <= radius then
 			if healAmount < 0 then
-				DamageService.applyDamage(humanoid, healAmount, source) -- negative = heal
+				-- applyDamage returns how much healing actually landed; the rest
+				-- would otherwise be wasted on an already-full ally.
+				local applied = DamageService.applyDamage(humanoid, healAmount, source) -- negative = heal
+				if overflowShield then
+					local wasted = -healAmount - applied
+					if wasted > 0 then
+						DamageService.applyEffect(humanoid, FX.Shield, wasted, 8, source)
+					end
+				end
 			end
 			if shieldPower > 0 then
 				DamageService.applyEffect(humanoid, FX.Shield, shieldPower, shieldDuration, source)
@@ -185,12 +218,29 @@ local function applyFriendlyArea(impact: Vector3, radius: number, healAmount: nu
 	end
 end
 
-local function spawnWall(impact: Vector3, duration: number)
+local WALL_SIZE = Vector3.new(14, 8, 2) -- width, height, thickness
+
+--[[ The flat direction the caster aimed, used to face walls across the lane. ]]
+local function castDirection(origin: Vector3, impact: Vector3): Vector3
+	local flat = Vector3.new(impact.X - origin.X, 0, impact.Z - origin.Z)
+	if flat.Magnitude < 0.1 then
+		return Vector3.new(0, 0, 1)
+	end
+	return flat.Unit
+end
+
+--[[ Raises one stone wall broadside to `direction`, so its 14-stud width blocks
+     the lane the caster aimed down rather than sitting at a random angle. ]]
+local function spawnWall(position: Vector3, direction: Vector3, duration: number)
+	local base = position + Vector3.new(0, WALL_SIZE.Y / 2, 0)
+
 	local wall = Instance.new("Part")
 	wall.Name = "StoneWall"
 	wall.Anchored = true
-	wall.Size = Vector3.new(14, 8, 2)
-	wall.Position = impact + Vector3.new(0, 4, 0)
+	wall.Size = WALL_SIZE
+	-- lookAt puts the part's thin Z axis along the cast, leaving the width
+	-- perpendicular to it.
+	wall.CFrame = CFrame.lookAt(base, base + direction)
 	wall.Material = Enum.Material.Rock
 	wall.Color = Color3.fromRGB(110, 105, 95)
 	wall.Parent = Workspace:FindFirstChild("Enemies") or Workspace
@@ -201,16 +251,39 @@ local function spawnWall(impact: Vector3, duration: number)
 	end)
 end
 
---[[ Executes a validated spell. `mods` are the player's upgrade multipliers. ]]
-local function executeSpell(player: Player, spell: any, root: BasePart, aim: Vector3, mods)
+--[[ Great Wall signature: three segments side by side across the cast lane.
+     All three share one direction so the segments meet flush instead of
+     fanning apart. ]]
+local function spawnWallLine(impact: Vector3, direction: Vector3, duration: number)
+	-- Sideways step of exactly one wall width, so the segments join up.
+	local side = direction:Cross(Vector3.yAxis) * WALL_SIZE.X
+	for i = -1, 1 do
+		spawnWall(impact + side * i, direction, duration)
+	end
+end
+
+--[[ Executes a validated spell.
+     @param mods      global upgrade multipliers (shop)
+     @param spellMods this spell's own tree multipliers + signature nodes ]]
+local function executeSpell(
+	player: Player,
+	spell: any,
+	root: BasePart,
+	aim: Vector3,
+	mods: UpgradeService.UpgradeState,
+	spellMods: UpgradeService.SpellMods
+)
 	local origin = root.Position
-	local damage = spell.Damage * (spell.Damage >= 0 and mods.DamageMult or 1)
-	local radius = spell.AreaOfEffect * mods.RadiusMult
+	local sig = spellMods.Signatures
+
+	-- Damage upgrades boost healing too (both live on Spell.Damage, healing
+	-- being negative), so scale by magnitude rather than sign.
+	local damageMult = mods.DamageMult * spellMods.DamageMult
+	local damage = spell.Damage * damageMult
+	local radius = spell.AreaOfEffect * mods.RadiusMult * spellMods.RadiusMult
 
 	local impact: Vector3
-	if spell.CastType == "Self" then
-		impact = origin
-	elseif spell.CastType == "Summon" then
+	if spell.CastType == "Self" or spell.CastType == "Summon" then
 		impact = origin
 	else
 		impact = aim
@@ -219,8 +292,10 @@ local function executeSpell(player: Player, spell: any, root: BasePart, aim: Vec
 	broadcastVFX(player, spell, origin, impact, radius)
 
 	if spell.CastType == "Summon" and spell.SummonId then
-		for i = 1, (spell.SummonCount or 1) do
-			local angle = (i / (spell.SummonCount or 1)) * math.pi * 2
+		-- Legion: two extra skeletons per cast.
+		local count = (spell.SummonCount or 1) + (sig.Legion and 2 or 0)
+		for i = 1, count do
+			local angle = (i / count) * math.pi * 2
 			local offset = Vector3.new(math.cos(angle) * 4, 0, math.sin(angle) * 4)
 			EnemyService.spawnMinion(spell.SummonId, player, origin + offset)
 		end
@@ -229,7 +304,12 @@ local function executeSpell(player: Player, spell: any, root: BasePart, aim: Vec
 
 	-- Pure-utility wall (no damage, no effect, targeted): spawn an obstacle.
 	if spell.Damage == 0 and not spell.Effect and spell.CastType == "AreaTarget" then
-		spawnWall(impact, 8)
+		local direction = castDirection(origin, impact)
+		if sig.GreatWall then
+			spawnWallLine(impact, direction, 16)
+		else
+			spawnWall(impact, direction, 8)
+		end
 		return
 	end
 
@@ -244,7 +324,8 @@ local function executeSpell(player: Player, spell: any, root: BasePart, aim: Vec
 			spell.Damage < 0 and damage or 0,
 			hasShield and (spell.EffectPower or 0) or 0,
 			spell.EffectDuration or 0,
-			player
+			player,
+			sig.Overflow
 		)
 	end
 
@@ -254,13 +335,33 @@ local function executeSpell(player: Player, spell: any, root: BasePart, aim: Vec
 		return
 	end
 
+	-- Shatter: this cast punishes anything already frozen.
+	local frozenBonus = sig.Shatter and 1.6 or nil
+
 	if radius > 0 and spell.CastType ~= "Projectile" then
-		applyEnemyArea(impact, radius, spell, damage, player)
+		applyEnemyArea(impact, radius, spell, damage, player, frozenBonus)
+
+		-- Echo Blast / Cataclysm: repeat the detonation on a delay. Each echo
+		-- re-queries the arena, so it catches enemies that walked in after the
+		-- first hit. Guarded by the player still being in the match.
+		local echoes = (sig.EchoBlast and 1 or 0) + (sig.Cataclysm and 2 or 0)
+		for i = 1, echoes do
+			task.delay(0.6 * i, function()
+				if not player.Parent then
+					return
+				end
+				broadcastVFX(player, spell, impact, impact, radius)
+				applyEnemyArea(impact, radius, spell, damage * 0.6, player, frozenBonus)
+			end)
+		end
 	elseif spell.CastType == "Projectile" then
 		local firstHit = applySingleTarget(impact, spell, damage, player)
 		if radius > 0 then
-			-- Projectile + AoE => chaining behaviour.
-			applyChain(firstHit, impact, radius, spell, damage, player)
+			-- Projectile + AoE => chaining behaviour. Overload adds jumps and
+			-- softens the per-jump falloff.
+			local jumps = sig.Overload and 6 or 3
+			local falloff = sig.Overload and 0.85 or 0.7
+			applyChain(firstHit, impact, radius, spell, damage, player, jumps, falloff)
 		end
 	else
 		applySingleTarget(impact, spell, damage, player)
@@ -309,6 +410,7 @@ local function onCastRequest(player: Player, payload: any)
 	end
 
 	local mods = UpgradeService.getState(player)
+	local spellMods = UpgradeService.getSpellMods(player, spell.Id)
 
 	-- 5. Cooldown (server-side, upgrade-adjusted).
 	local now = os.clock()
@@ -343,10 +445,10 @@ local function onCastRequest(player: Player, payload: any)
 	-- All checks passed: commit cost + cooldown, then resolve.
 	mana.Mana -= manaCost
 	pushMana(player)
-	playerCds[spell.Id] = now + spell.Cooldown * mods.CooldownMult
+	playerCds[spell.Id] = now + spell.Cooldown * mods.CooldownMult * spellMods.CooldownMult
 
 	local aimPos = aim or root.Position
-	local ok, err = pcall(executeSpell, player, spell, root, aimPos, mods)
+	local ok, err = pcall(executeSpell, player, spell, root, aimPos, mods, spellMods)
 	if not ok then
 		warn("[SpellCastingService] executeSpell error: " .. tostring(err))
 	end
@@ -373,6 +475,16 @@ local function regenLoop()
 end
 
 -- Lifecycle -------------------------------------------------------------------
+
+--[[ Current and maximum mana for a player. Read by PartyService for the party
+     frames; mana itself stays owned by this service. ]]
+function SpellCastingService.getMana(player: Player): (number, number)
+	local state = manaState[player]
+	if not state then
+		return 0, GameConfig.Player.MaxMana
+	end
+	return state.Mana, state.Max
+end
 
 function SpellCastingService.resetMana(player: Player)
 	local state = ensureMana(player)

@@ -33,7 +33,10 @@ local ORDER = {
 	"AntiExploit",
 	"UpgradeService",
 	"LobbyService",
+	"CosmeticsService",
+	"MatchmakingService",
 	"SpellCastingService",
+	"PartyService",
 	"WaveManager",
 }
 

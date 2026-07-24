@@ -15,17 +15,27 @@ local Remotes = require(Shared.Remotes)
 -- Ensure the remotes folder has replicated before controllers wire listeners.
 Remotes.event(Remotes.Names.WaveStateChanged)
 
-local CONTROLLERS = {
+-- Controllers expose optional Init/Start, so the list is deliberately loose:
+-- annotating it as { any } stops the checker from inferring the whole array
+-- from its first element.
+--
+-- HUDController creates the ScreenGui and mounts the panel controllers into it
+-- during Init, so it must run before their Start. Every Init runs before every
+-- Start, which guarantees that ordering regardless of position in this list.
+local CONTROLLERS: { any } = {
 	require(script.ClientState),
 	require(script.AmbianceController),
 	require(script.VFXController),
 	require(script.SpellInputController),
 	require(script.HUDController),
+	require(script.MinimapController),
+	require(script.PartyFrameController),
+	require(script.LobbyPanelController),
 }
 
 for _, controller in CONTROLLERS do
 	if type(controller.Init) == "function" then
-		local ok, err = pcall(controller.Init)
+		local ok: boolean, err: any = pcall(controller.Init)
 		if not ok then
 			warn("[Client] Init failed: " .. tostring(err))
 		end
@@ -34,7 +44,7 @@ end
 
 for _, controller in CONTROLLERS do
 	if type(controller.Start) == "function" then
-		local ok, err = pcall(controller.Start)
+		local ok: boolean, err: any = pcall(controller.Start)
 		if not ok then
 			warn("[Client] Start failed: " .. tostring(err))
 		end

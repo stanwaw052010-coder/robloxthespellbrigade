@@ -64,6 +64,19 @@ GameConfig.Security = {
 	RangeTolerance = 8,
 }
 
+-- Matchmaking -----------------------------------------------------------------
+GameConfig.Matchmaking = {
+	-- OFF by default: every player shares this one instance, which is what you
+	-- want in Studio and for a single-place test. Turn it on to route each party
+	-- to its own reserved server via TeleportService (see MatchmakingService).
+	Enabled = false,
+	-- Place to teleport parties into. 0 = this place (the usual setup: a lobby
+	-- place and a game place share code, or the same place hosts both).
+	MatchPlaceId = 0,
+	-- Seconds a party leader's start request waits for the reserved server.
+	TeleportTimeout = 20,
+}
+
 -- Status effect identifiers (shared so client VFX and server logic agree) ------
 GameConfig.StatusEffects = {
 	Burn = "Burn", -- fire damage over time
@@ -92,6 +105,7 @@ table.freeze(GameConfig.Base)
 table.freeze(GameConfig.Wave)
 table.freeze(GameConfig.Economy)
 table.freeze(GameConfig.Security)
+table.freeze(GameConfig.Matchmaking)
 table.freeze(GameConfig.StatusEffects)
 table.freeze(GameConfig.Combat)
 table.freeze(GameConfig)
