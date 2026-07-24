@@ -11,6 +11,11 @@ Brigade**, реализованный на Roblox / Luau. 1–8 игроков �
 
 ---
 
+> Как формулировать задачи для Claude Code по этому проекту (и как написать
+> промпт для новой игры с нуля) — см. **[docs/PROMPT_GUIDE.md](docs/PROMPT_GUIDE.md)**.
+> Правила проекта, которые Claude Code читает автоматически, — в
+> [CLAUDE.md](CLAUDE.md).
+
 ## Быстрый старт (Quick start)
 
 Проект использует [Rojo](https://rojo.space) для синхронизации кода с Roblox
